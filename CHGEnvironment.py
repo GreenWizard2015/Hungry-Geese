@@ -36,6 +36,7 @@ class CGoose:
         return True
     
     self.die('Illegal move (self collision).')
+    print('Illegal move (self collision).')
     return False
   
   def moveTo(self, head, grow=False):
@@ -50,7 +51,7 @@ class CGoose:
   def starve(self):
     self._stepReward += self._configs.get('starve reward', 0)
     if len(self.body) <= 1:
-      self.die('Starved.')
+      self.alive = False# self.die('Starved.')
     return self.body.pop()
 
   def state(self, food, geese, step):
@@ -172,7 +173,7 @@ class CHGEnvironment:
           for g in self._geese:
             if newHead in g.body:
               g.killOpponent()
-          goose.die('Collide with goose')
+              goose.die('Collide with goose (%d %d)' % (goose.index, g.index))
       else: # just move
         self._freeCells.remove(newHead)
         self._freeCells.add(goose.moveTo(newHead))

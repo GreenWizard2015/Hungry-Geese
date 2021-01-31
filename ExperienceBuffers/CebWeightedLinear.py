@@ -1,32 +1,36 @@
 import random
 import numpy as np
 import itertools
-from _collections import defaultdict
-import math
+from collections import defaultdict
 
 class CWeightsUpdater:
-  def __init__(self, samplesID, samples):
-    self._samplesID = samplesID
-    self._samples = samples
+  def __init__(self, updater):
+    self._updater = updater
     return
   
   def update(self, values):
-    values = np.power(np.abs(values) + 1e-3, 0.6)
-    for i, value in enumerate(values):
-      self._samples[self._samplesID[i]][-1] = math.fabs(value)
-    return
-
+    return self._updater(values)
+  
 class CebWeightedLinear:
   def __init__(self, maxSize=None):
     self._maxSize = maxSize
     self._samples = []
     return
   
+  def _normWeights(self, weights):
+    eps = 1e-3
+    return np.abs(np.power(np.abs(weights) + eps, 0.6) + eps)
+ 
+  def _updateSamples(self, samplesID, values):
+    for ind, value in zip(samplesID, self._normWeights(values)):
+      self._samples[ind][-1] = value
+    return
+
   def store(self, samples, weights=None):
     if weights is None:
       weights = np.ones((len(samples), )) * float('inf')
     else:
-      weights = np.power(np.abs(weights) + 1e-3, 0.6)
+      weights = self._normWeights(weights)
     ######
     for sample, w in zip(samples, weights):
       self._samples.append([*sample, w])
@@ -73,4 +77,4 @@ class CebWeightedLinear:
     
   def sampleBatch(self, batch_size):
     results, indexes = self._createBatch(batch_size)
-    return [np.array(x) for x in results.values()], CWeightsUpdater(indexes, self._samples)
+    return [np.array(x) for x in results.values()], CWeightsUpdater(lambda v: self._updateSamples(indexes, v))

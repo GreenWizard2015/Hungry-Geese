@@ -119,7 +119,8 @@ def learn_environment(model, params):
       {
         'gamma': GAMMA,
         'bootstrapping steps': BOOTSTRAPPED_STEPS,
-        'episodes': params['test episodes']
+        'episodes': params['test episodes'],
+        'env': params.get('env', {})
       }
     )
   ######################################################

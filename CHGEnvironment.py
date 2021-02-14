@@ -68,6 +68,12 @@ class CGoose:
     if self.alive:
       self._stepReward += self._configs.get('kill reward', 0)
     return
+  
+  def killed(self):
+    if self._wasKilled and self._wasAlive:
+      self._stepReward += self._configs.get('killed reward', 0)
+      self._deathReason = 'Killed by enemy' 
+    return
 
   def state(self, food, geese, step):
     return {
@@ -140,8 +146,8 @@ class CHGEnvironment:
     ######
     # check colliding NEW POSITION of heads
     collideWith = [self._gooseCollide(ind) for ind, _ in enumerate(self._geese)]
-    for i, killedBy in enumerate(collideWith):
-      if not (killedBy is None):
+    for i, killer in enumerate(collideWith):
+      if not (killer is None):
         self._geese[i].die('Collide with goose', killed=True)
         
     for killer in collideWith:
@@ -149,6 +155,11 @@ class CHGEnvironment:
         if killer.alive:
           killer.killOpponent()
 
+    for i, killer in enumerate(collideWith):
+      if not (killer is None):
+        if killer.alive:
+          self._geese[i].killed()
+        
     self._spawnFood()
     ######
     if self.done:

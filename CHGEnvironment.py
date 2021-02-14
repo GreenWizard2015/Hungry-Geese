@@ -9,55 +9,72 @@ class CGoose:
     self._prevAction = None
     self._score = 0
     self._configs = configs
-    self._deathReason = ''
-    self.reset()
+    self._deathReason = 'Alive'
+    self._age = 0
+    self.nextStep()
     return
   
-  def reset(self):
+  def nextStep(self):
+    if self.alive:
+      self._age += 1
     self._stepReward = 0
     self._wasAlive = self.alive
+    self._wasKilled = False
     return
-  
-  def killOpponent(self):
-    self._stepReward += self._configs.get('kill reward', 0)
-    return
-  
-  def die(self, reason):
+
+  def die(self, reason, killed=False):
     if self.alive:
-      self._stepReward += self._configs.get('death reward', -1)
       self._deathReason = reason
+      if killed:
+        self._stepReward += self._configs.get('death reward', -1)
+      self._wasKilled = killed
+
     self.alive = False
+    self.body = []
     return
     
   def checkMove(self, action, newPos):
-    if (self._prevAction is None) or not (action == self._prevAction.opposite()):
-      if not (newPos in self.body): # self collision 
-        self._prevAction = action
-        return True
+    if not (self._prevAction is None): # not first move
+      if action == self._prevAction.opposite():
+        self.die('Illegal move.', killed=True)
+        print('Illegal move.')
+        return False
     
-    self.die('Illegal move (self collision).')
-    print('Illegal move (self collision).')
-    return False
+    if newPos in self.body[:-1]: # self collision
+      self.die('Self collision.', killed=True)
+      return False
+    
+    self._prevAction = action
+    return True
   
   def moveTo(self, head, grow=False):
     self.body.insert(0, head)
     if not grow:
-      self._stepReward += self._configs.get('move reward', 0)
+      self._stepReward += self._configs.get('move reward', lambda _: 0)(self.body)
       return self.body.pop()
     
-    self._stepReward += self._configs.get('grow reward', 1)
+    self._stepReward += self._configs.get('grow reward', lambda _: 1)(self.body)
     return
   
   def starve(self):
     self._stepReward += self._configs.get('starve reward', 0)
-    if len(self.body) <= 1:
-      self.alive = False# self.die('Starved.')
-    return self.body.pop()
+    self.body.pop()
+    
+    if len(self.body) < 1:
+      self.die('Starved.')
+    return
+  
+  def killOpponent(self):
+    if self.alive:
+      self._stepReward += self._configs.get('kill reward', 0)
+    return
 
   def state(self, food, geese, step):
     return {
+      'age': self._age,
       'action': str(self._prevAction),
       'reward': self._score,
+      'score': self._score,
       'step reward': self._stepReward,
       'info': {}, # dummy
       'observation': {
@@ -70,7 +87,8 @@ class CGoose:
       'status': 'ACTIVE' if self.alive else 'DONE',
       'death reason': self._deathReason,
       'was alive': self._wasAlive,
-      'alive': self.alive
+      'alive': self.alive,
+      'was killed': self._wasKilled,
     }
   
   def score(self, v):
@@ -85,7 +103,7 @@ class CHGEnvironment:
     self._columns = params.get('columns', 11)
     self._hungerRate = params.get('hunger rate', 40)
     self._minFood = params.get('min food', 2)
-    self._minPlayers = params.get('min players', 1)
+    self._minPlayers = params.get('min players', 0)
     self._seed = params.get('seed', None)
     self._episodeSteps = params.get('episode steps', 200)
     
@@ -100,31 +118,57 @@ class CHGEnvironment:
   def reset(self):
     self._random = random.Random(self._seed)
     self._step = 0
-    self._freeCells = set(range(self._columns * self._rows))
-    
     self._food = set()
-    self._spawnFood()
+    self._geese = []
     
+    self._spawnFood()
     self._geese = [CGoose(i, self._sampleCell(), self._params) for i in range(self._agents)]
     return self.state
   
   def step(self, actions):
     self._step += 1
     
+    hungerStrike = (self._step % self._hungerRate == 0)
+    for goose in self._geese:
+      goose.nextStep()
+      # If hunger strikes remove from the tail.
+      if hungerStrike and goose.alive:
+        goose.starve()
+      
     for action, goose in zip(actions, self._geese):
-      goose.reset()
-      if goose.alive:
-        self._perform(goose, Action[action])
+      self._perform(goose, action)
     ######
+    # check colliding NEW POSITION of heads
+    collideWith = [self._gooseCollide(ind) for ind, _ in enumerate(self._geese)]
+    for i, killedBy in enumerate(collideWith):
+      if not (killedBy is None):
+        self._geese[i].die('Collide with goose', killed=True)
+        
+    for killer in collideWith:
+      if not (killer is None):
+        if killer.alive:
+          killer.killOpponent()
+
     self._spawnFood()
-    
+    ######
     if self.done:
       for goose in self._geese:
         if goose.alive:
           # Boost the survivor's reward to maximum
           goose.score(2 * self._episodeSteps + len(goose.body))
-    
     return self.state
+  
+  def _gooseCollide(self, ind):
+    goose = self._geese[ind]
+    if not goose.alive:
+      return None
+    
+    head = goose.body[0]
+    for i, enemy in enumerate(self._geese):
+      if enemy.alive and not(i == ind):
+        if head in enemy.body:
+          return enemy
+    return None
   
   @property
   def state(self):
@@ -148,9 +192,15 @@ class CHGEnvironment:
     return needed_food
 
   def _sampleCell(self):
-    cell = self._random.choice(tuple(self._freeCells)) 
-    self._freeCells.remove(cell)
-    return cell
+    freeCells = list(range(self._columns * self._rows))
+    for x in self._food:
+      freeCells.remove(x)
+
+    for goose in self._geese:
+      for x in goose.body:
+        if x in freeCells: freeCells.remove(x)
+
+    return self._random.choice(freeCells)
 
   def _translate(self, position: int, direction: Action) -> int:
     rows, columns = self._rows, self._columns
@@ -161,28 +211,18 @@ class CHGEnvironment:
     return row * columns + column
   
   def _perform(self, goose, action):
+    if not goose.alive: return
     goose.score(self._step + len(goose.body))  # standard score
     
+    action = Action[action]
     newHead = self._translate(goose.body[0], action)
-    if goose.checkMove(action, newHead):
-      if newHead not in self._freeCells: # collide
-        if newHead in self._food: # with food
-          #self._freeCells.remove(newHead)
-          goose.moveTo(newHead, grow=True)
-        else: # with goose?
-          for g in self._geese:
-            if newHead in g.body:
-              g.killOpponent()
-              goose.die('Collide with goose (%d %d)' % (goose.index, g.index))
-      else: # just move
-        self._freeCells.remove(newHead)
-        self._freeCells.add(goose.moveTo(newHead))
-    ####
-    # If hunger strikes remove from the tail.
-    if (self._step % self._hungerRate == 0) and goose.alive:
-      self._freeCells.add(goose.starve())
-      
-    if not goose.alive: # remove body if die
-      for p in goose.body:
-        self._freeCells.add(p)
+    if not goose.checkMove(action, newHead): return
+    
+    goose.moveTo(newHead, grow=self._eatFood(newHead))
     return
+  
+  def _eatFood(self, pos):
+    if pos in self._food:
+      self._food.remove(pos)
+      return True
+    return False

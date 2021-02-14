@@ -15,55 +15,76 @@ else: # local GPU
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.losses import Huber
 
-from CHGEnvironment import CHGEnvironment
-import model
+import model as M
 from Utils import collectReplays
 from ExperienceBuffers.CebWeightedLinear import CebWeightedLinear
+from ExperienceBuffers.CebPrioritized import CebPrioritized
 import numpy as np
 from Utils.CNoisedNetwork import CNoisedNetwork
 import time
 import Utils
 
-def collectExperience(env, model, memory, params):
+def collectExperience(model, memory, params):
   BOOTSTRAPPED_STEPS = params['bootstrapping steps']
   GAMMA = params['gamma']
-  bootstrapping = GAMMA ** np.arange(BOOTSTRAPPED_STEPS) 
+  discounts = GAMMA ** np.arange(BOOTSTRAPPED_STEPS + 1) 
   
-  FOOD_LAYER = 1
-  PLAYER_LAYER = 2
-  trajectories, allScores = collectReplays(model, agentsN=4, envN=params['episodes'])
-  allScores = []
+  trajectories, stats = collectReplays(
+    model,
+    agentsN=params.get('agents', 4),
+    envN=params['episodes'],
+    envParams=params.get('env', {})
+  )
+  
+  scores = stats['scores']
+  kinds = stats['kinds']
+  kindsSet = set(kinds)
+  
+  deathBy = stats['death by']
+  deathReasons = set(deathBy)
+  
+  for kind in kindsSet:
+    print(kind, {
+      reason: sum(
+        1 for i, x in enumerate(deathBy) if (x==reason) and (kind==kinds[i])
+      ) for reason in deathReasons
+    })
+  
+  RLRewards = []
+  Ages = []
   for traj in trajectories:
-    prevState, actions, rewards, nextStates, alive = zip(*traj)
-    # bootstrap
-    alive = np.array(alive, np.float16)
-    actions = np.array(actions, np.int8)
-    rewards = np.array(rewards, np.float16)
-    prevState = np.array(prevState, np.float16)
-    nextStates = np.array(nextStates, np.float16)
-    prevFoodReward = 0
-    
+    prevState, actions, rewards, nextStates, alive = (np.array(x, np.float16) for x in zip(*traj))
+    Ages.append(len(rewards))
+    RLRewards.append(rewards.sum())
+    # bootstrap & discounts
+    discounted = []
     for i in range(len(rewards)):
       r = rewards[i:i+BOOTSTRAPPED_STEPS]
-      sz = len(r)
-      
-      foodD = prevState[i][PLAYER_LAYER, 0 < prevState[i][FOOD_LAYER]]
-      foodReward = .1 * (1 - foodD.min())
-      rewards[i] = (r * bootstrapping[:sz]).sum() + foodReward - prevFoodReward
-      prevFoodReward = foodReward
-      
-      nextStates[i] = nextStates[i+sz-1]
-      alive[i] *= GAMMA ** sz
+      N = len(r)
+
+      discounted.append( (r * discounts[:N]).sum() )
+      nextStates[i] = nextStates[i+N-1]
+      alive[i] *= discounts[N]
+    
+    rewards = np.array(discounted, np.float16)
+    actions = actions.astype(np.int8)
     ########
     memory.store(list(zip(prevState, actions, rewards, nextStates, alive)))
-    allScores.append(rewards.sum())
-  return allScores
+
+  stats = {}
+  for kind in kinds:
+    replaysID = [i for i, k in enumerate(kinds) if k == kind]
+    stats.update({
+      'Age_%s' % kind: [Ages[i] for i in replaysID],
+      'Score_%s' % kind: [scores[i] for i in replaysID],
+      'RLRewards_%s' % kind: [RLRewards[i] for i in replaysID],
+    })
+  return stats
 ###############
 def train(model, memory, params):
-  modelClone = tf.keras.models.clone_model(model)
+  modelClone = params['model clone'](model)
   modelClone.set_weights(model.get_weights()) # use clone model for stability
   
-  ALPHA = params.get('alpha', 1.0)
   rows = np.arange(params['batch size'])
   lossSum = 0
   for _ in range(params['episodes']):
@@ -75,7 +96,7 @@ def train(model, memory, params):
     targets = modelClone.predict(states)
     delta = rewards + futureScores - targets[rows, actions]
     W.update(delta)
-    targets[rows, actions] += ALPHA * delta
+    targets[rows, actions] += delta
     
     lossSum += model.fit(states, targets, epochs=1, verbose=0).history['loss'][0]
     ###
@@ -89,11 +110,10 @@ def learn_environment(model, params):
   BOOTSTRAPPED_STEPS = params['bootstrapped steps']
   metrics = {}
 
-  memory = CebWeightedLinear(maxSize=350000)
+  memory = CebPrioritized(maxSize=5000)
   ######################################################
   def testModel(EXPLORE_RATE):
     return collectExperience(
-      CHGEnvironment({'agents': 4}),
       CNoisedNetwork(network, EXPLORE_RATE),
       memory,
       {
@@ -112,11 +132,7 @@ def learn_environment(model, params):
     T = time.time()
     
     EXPLORE_RATE = params['explore rate'](epoch)
-    alpha = params.get('alpha', lambda _: 1)(epoch)
-    print(
-      '[%s] %d/%d epoch. Explore rate: %.3f. Alpha: %.5f.' % (NAME, epoch, params['epochs'], EXPLORE_RATE, alpha)
-    )
-    print('Samples: %d.' % (len(memory), ))
+    print('[%s] %d/%d epoch. Explore rate: %.3f.' % (NAME, epoch, params['epochs'], EXPLORE_RATE))
     ##################
     # Training
     trainLoss = train(
@@ -124,18 +140,19 @@ def learn_environment(model, params):
       {
         'batch size': BATCH_SIZE,
         'episodes': params['train episodes'](epoch),
-        'alpha': alpha
+        'model clone': params['model clone']
       }
     )
     print('Avg. train loss: %.4f' % trainLoss)
     ##################
     # test
     print('Testing...')
-    scores = testModel(EXPLORE_RATE)
-    Utils.trackScores(scores, metrics)
+    stats = testModel(EXPLORE_RATE)
+    for k, v in stats.items():
+      Utils.trackScores(v, metrics, metricName=k)
     ##################
     
-    scoreSum = sum(scores)
+    scoreSum = sum(stats['Score_network'])
     print('Scores sum: %.5f' % scoreSum)
     if bestModelScore < scoreSum:
       print('save best model (%.2f => %.2f)' % (bestModelScore, scoreSum))
@@ -143,26 +160,35 @@ def learn_environment(model, params):
       os.makedirs('weights', exist_ok=True)
       model.save_weights('weights/%s.h5' % NAME)
     ##################
-    os.makedirs('charts', exist_ok=True)
-    Utils.plotData2file(metrics, 'charts/%s.jpg' % NAME)
+    os.makedirs('charts/%s' % NAME, exist_ok=True)
+    for metricName in metrics.keys():
+      Utils.plotData2file(metrics, 'charts/%s/%s.jpg' % (NAME, metricName), metricName)
     print('Epoch %d finished in %.1f sec.' % (epoch, time.time() - T))
     print('------------------')
 ############
 
-network = model.createModel(shape=(6, 11, 11))
-network.compile(optimizer=Adam(lr=1e-4), loss=Huber(delta=1))
+MODEL_SHAPE = (11, 11, 3)
+network = M.createModel(shape=MODEL_SHAPE)
+network.summary()
+network.compile(optimizer=Adam(lr=1e-4, clipnorm=1.), loss=Huber(delta=1.))
 
 DEFAULT_LEARNING_PARAMS = {
+  'model clone': lambda _: M.createModel(shape=MODEL_SHAPE),
   'batch size': 256,
-  'gamma': 0.99,
-  'bootstrapped steps': 10,
+  'gamma': 0.95,
+  'bootstrapped steps': 3,
   
   'epochs': 1000,
   'train episodes': lambda _: 64,
-  'test episodes': 256,
+  'test episodes': 64,
 
-  'alpha': lambda _: 1,
-  'explore rate': lambda e: max((.05 * .99**e, 1e-3)),
+  'explore rate': lambda e: max((.05 * .9**e, 1e-3)),
+  
+  'env': {
+    'move reward': lambda x: 1./20,
+    'grow reward': lambda x: max((0.95 ** (len(x) - 1), 0.5)),
+    'kill reward': 2,
+  }
 }
 #######################
 for i in range(1):

@@ -16,12 +16,12 @@ class CGreedyAgent:
     configuration = Configuration(config_dict)
     return GlobalObservations(observation, configuration)
   
-  def encodeObservations(self, obs_dict, config_dict, gstate):
+  def encodeObservations(self, obs_dict, config_dict, gstate, details=False):
     observation = Observation(obs_dict)
     configuration = Configuration(config_dict)
-    return self._state.local(observation, configuration, gstate)
+    return self._state.local(observation, configuration, gstate, details)
 
-  def processObservations(self, obs_dict, config_dict, grid, alive=True):
+  def processObservations(self, obs_dict, config_dict, grid, alive=True, details=False):
     if not alive: return self._state.EmptyObservations
     
     observation = Observation(obs_dict)
@@ -29,8 +29,9 @@ class CGreedyAgent:
     
     if self._agent is None:
       self._agent = GreedyAgent(configuration)
-      
-    state, validAct, actionsMapping = self.encodeObservations(obs_dict, config_dict, grid)
+
+    obs = self.encodeObservations(obs_dict, config_dict, grid, details)
+    state, validAct, actionsMapping = obs[:3]
     
     self._agent.last_action = Action[self._state.last_action] # sync
     self._actName = self._agent(observation)
@@ -40,13 +41,15 @@ class CGreedyAgent:
         actionsMapping[1]
       )
     self._actID = actionsMapping.index(self._actName)
+    
+    if details:
+      return(state, obs[-1])
     return state
   
   def choiceAction(self, QValues):
     self._state.perform(self._actName)
     return (self._actName, self._actID)
   
-  # only for Kaggle
   def play(self, obs_dict, config_dict):
     grid = self.processObservations(
       obs_dict, config_dict,

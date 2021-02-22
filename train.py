@@ -1,6 +1,7 @@
 import sys
 import os
 import tensorflow as tf
+import Agents
 
 if 'COLAB_GPU' in os.environ:
   # fix resolve modules
@@ -17,26 +18,26 @@ from tensorflow.keras.losses import Huber
 
 import model as M
 from Utils import collectReplays
-from ExperienceBuffers.CebWeightedLinear import CebWeightedLinear
-from ExperienceBuffers.CebPrioritized import CebPrioritized
+from ExperienceBuffers.CHGExperienceStorage import CHGExperienceStorage
 import numpy as np
 from Utils.CNoisedNetwork import CNoisedNetwork
 import time
 import Utils
+import math
+import SADiscriminator
+from Agents.CAgentState import LO_SHAPE
+from collections import defaultdict
 
 def collectExperience(model, memory, params):
-  BOOTSTRAPPED_STEPS = params['bootstrapping steps']
-  GAMMA = params['gamma']
-  discounts = GAMMA ** np.arange(BOOTSTRAPPED_STEPS + 1) 
-  
   trajectories, stats = collectReplays(
-    model,
-    agentsN=params.get('agents', 4),
+    models=[model, Utils.DummyNetwork, Utils.DummyNetwork, Utils.DummyNetwork],
+    agentsKinds=[Agents.CAgent, Agents.CGreedyAgent, Agents.CGreedyAgent, Agents.CGreedyAgent],
     envN=params['episodes'],
     envParams=params.get('env', {})
   )
   
   scores = stats['scores']
+  ranks = stats['ranks']
   kinds = stats['kinds']
   kindsSet = set(kinds)
   
@@ -52,24 +53,10 @@ def collectExperience(model, memory, params):
   
   RLRewards = []
   Ages = []
-  for traj in trajectories:
-    prevState, actions, rewards, nextStates, alive = (np.array(x, np.float16) for x in zip(*traj))
-    Ages.append(len(rewards))
-    RLRewards.append(rewards.sum())
-    # bootstrap & discounts
-    discounted = []
-    for i in range(len(rewards)):
-      r = rewards[i:i+BOOTSTRAPPED_STEPS]
-      N = len(r)
-
-      discounted.append( (r * discounts[:N]).sum() )
-      nextStates[i] = nextStates[i+N-1]
-      alive[i] *= discounts[N]
-    
-    rewards = np.array(discounted, np.float16)
-    actions = actions.astype(np.int8)
-    ########
-    memory.store(list(zip(prevState, actions, rewards, nextStates, alive)))
+  for traj, rank in zip(trajectories, ranks):
+    Ages.append(len(traj))
+    RLRewards.append(sum(x[2] for x in traj))
+    memory.store(traj, rank)
 
   stats = {}
   for kind in kinds:
@@ -81,70 +68,91 @@ def collectExperience(model, memory, params):
     })
   return stats
 ###############
-def train(model, memory, params):
-  modelClone = params['model clone'](model)
-  modelClone.set_weights(model.get_weights()) # use clone model for stability
+def train(model, targetModel, expertModel, memory, params):
+#   EAcc = expertModel.train(
+#     samplesProvider=memory.sampleExpertsActions, 
+#     batchSize=64, batchesPerEpoch=8,
+#     epochs=15,
+#     minAcc=0.9, minEpochs=3,
+#   )
   
-  rows = np.arange(params['batch size'])
-  lossSum = 0
+  lossSum = defaultdict(int)
   for _ in range(params['episodes']):
-    (states, actions, rewards, nextStates, nextStateScoreMultiplier), W = memory.sampleBatch(
-      batch_size=params['batch size']
-    )
+    states, actions, rewards, nextStates, nextStateScoreMultiplier, futureActions, isStarve = memory.sampleReplays()
+    dummyV = np.zeros((states.shape[0], 3))
+    rows = np.arange(states.shape[0])
   
-    futureScores = modelClone.predict(nextStates).max(axis=-1) * nextStateScoreMultiplier
-    targets = modelClone.predict(states)
-    delta = rewards + futureScores - targets[rows, actions]
-    W.update(delta)
-    targets[rows, actions] += delta
+#     expertScores = 0.05 * EAcc * expertModel.predict(states, futureActions)
+#     rewards += expertScores
     
-    lossSum += model.fit(states, targets, epochs=1, verbose=0).history['loss'][0]
+    _, GoodDQNFuture, BadDQNFuture = targetModel.predict(nextStates)
+    GFutureScores = GoodDQNFuture.max(axis=-1) * nextStateScoreMultiplier
+    BFutureScores = BadDQNFuture.max(axis=-1) * nextStateScoreMultiplier
+    ########
+    _, GTargets, BTargets = targetModel.predict(states)
+    
+    GTargets[rows, actions] += (rewards + GFutureScores) - GTargets[rows, actions]
+    BTargets[rows, actions] += (-rewards + BFutureScores) - BTargets[rows, actions]
+    
+    history = model.fit(
+      states, 
+      [dummyV, GTargets, BTargets],
+      epochs=1, verbose=0
+    ).history
+    
+    for k, v in history.items():
+      lossSum[k] += v[0]
     ###
 
-  return lossSum / params['episodes']
+  return {k: v / params['episodes'] for k, v in lossSum.items()}
 
 def learn_environment(model, params):
   NAME = params['name']
-  BATCH_SIZE = params['batch size']
-  GAMMA = params['gamma']
-  BOOTSTRAPPED_STEPS = params['bootstrapped steps']
   metrics = {}
 
-  memory = CebPrioritized(maxSize=5000)
+  memory = CHGExperienceStorage(params['experience storage'])
+  expertModel = SADiscriminator.CDiscriminator(stateShape=params['shape'], actionsN=3)
   ######################################################
   def testModel(EXPLORE_RATE):
-    return collectExperience(
+    T = time.time()
+    res = collectExperience(
       CNoisedNetwork(network, EXPLORE_RATE),
       memory,
       {
-        'gamma': GAMMA,
-        'bootstrapping steps': BOOTSTRAPPED_STEPS,
         'episodes': params['test episodes'],
         'env': params.get('env', {})
       }
     )
+    print('Testing finished in %.1f sec.' % (time.time() - T))
+    return res
   ######################################################
   # collect some experience
-  for _ in range(2):
+  for epoch in range(2):
     testModel(EXPLORE_RATE=0.8)
+
   #######################
+  targetModel = params['model clone'](model)
+  targetModel.set_weights(model.get_weights())
+  
   bestModelScore = -float('inf')
   for epoch in range(params['epochs']):
     T = time.time()
-    
+
     EXPLORE_RATE = params['explore rate'](epoch)
     print('[%s] %d/%d epoch. Explore rate: %.3f.' % (NAME, epoch, params['epochs'], EXPLORE_RATE))
     ##################
     # Training
+    if params.get('target update', lambda _: True)(epoch):
+      targetModel.set_weights(model.get_weights())
     trainLoss = train(
-      model, memory,
+      model, targetModel, expertModel, memory,
       {
-        'batch size': BATCH_SIZE,
         'episodes': params['train episodes'](epoch),
         'model clone': params['model clone']
       }
     )
-    print('Avg. train loss: %.4f' % trainLoss)
+    for k, v in trainLoss.items():
+      print('Avg. %s loss: %.4f' % (k, v))
     ##################
     # test
     print('Testing...')
@@ -155,11 +163,14 @@ def learn_environment(model, params):
     
     scoreSum = sum(stats['Score_network'])
     print('Scores sum: %.5f' % scoreSum)
+    
+    os.makedirs('weights', exist_ok=True)
+    model.save_weights('weights/%s-latest.h5' % NAME)
     if bestModelScore < scoreSum:
       print('save best model (%.2f => %.2f)' % (bestModelScore, scoreSum))
       bestModelScore = scoreSum
-      os.makedirs('weights', exist_ok=True)
-      model.save_weights('weights/%s.h5' % NAME)
+      model.save_weights('weights/%s-epoch-%06d.h5' % (NAME, epoch))
+    
     ##################
     os.makedirs('charts/%s' % NAME, exist_ok=True)
     for metricName in metrics.keys():
@@ -168,16 +179,36 @@ def learn_environment(model, params):
     print('------------------')
 ############
 
-MODEL_SHAPE = (11, 11, 3)
-network = M.createModel(shape=MODEL_SHAPE)
+MODEL_SHAPE = LO_SHAPE
+network  = M.createModel(shape=MODEL_SHAPE)
 network.summary()
-network.compile(optimizer=Adam(lr=1e-4, clipnorm=1.), loss=Huber(delta=1.))
 
+def entropyOf(y_pred):
+  probs = y_pred / (tf.reduce_sum(y_pred , axis=1, keepdims=True) + 1e-8)
+  return -tf.reduce_sum(probs * tf.math.log(probs + 1e-8), axis=1)
+
+network.compile(optimizer=Adam(lr=1e-4, clipnorm=1.), loss=[
+  lambda _,x: tf.math.reduce_mean(entropyOf(x)), # ensembledQValues
+  Huber(delta=1.), # GoodDuelDQN
+  Huber(delta=1.), # BadDuelDQN
+], loss_weights=[0.05, 1, 1])
+
+# calc GAMMA so  +-1 reward after N steps would give +-0.001 for current step
+GAMMA = math.pow(0.001, 1.0 / 50.0)
+print('Gamma: %.04f' % GAMMA)
 DEFAULT_LEARNING_PARAMS = {
+  'shape': MODEL_SHAPE,
   'model clone': lambda _: M.createModel(shape=MODEL_SHAPE),
-  'batch size': 256,
-  'gamma': 0.95,
-  'bootstrapped steps': 3,
+  'experience storage': {
+    'gamma': GAMMA,
+    'bootstrapped steps': 2,
+    'replays batch size': 64,
+    
+    'experts actions': {
+      'range': 3,
+      'mask': np.inf
+    },
+  },
   
   'epochs': 1000,
   'train episodes': lambda _: 64,
@@ -186,10 +217,17 @@ DEFAULT_LEARNING_PARAMS = {
   'explore rate': lambda e: max((.05 * .9**e, 1e-3)),
   
   'env': {
-    'move reward': lambda x: 1./20,
-    'grow reward': lambda x: max((0.95 ** (len(x) - 1), 0.5)),
-    'kill reward': 2,
-  }
+    'episode steps': 200,
+    'min players': 2,
+    ##############
+    'survived reward': +10,
+    'kill reward': +.5,
+    'grow reward': lambda x: 0.85 ** (len(x) - 1),
+    'starve reward': -10,
+    'death reward': -10,
+    'opponent death reward': +5,
+    'killed reward': -1,
+  },
 }
 #######################
 for i in range(1):

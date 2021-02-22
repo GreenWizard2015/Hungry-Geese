@@ -7,7 +7,7 @@ class CNoisedNetwork:
     return
   
   def predict(self, X):
-    res = self._network(np.array(X)).numpy()
+    res = self._network(np.array(X))[0].numpy()
     if 0 < self._noise:
       rndIndexes = np.where(np.random.random_sample(res.shape[0]) < self._noise)
       res[rndIndexes] = np.random.random_sample(res.shape)[rndIndexes]

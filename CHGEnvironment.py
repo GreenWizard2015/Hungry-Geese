@@ -17,6 +17,7 @@ class CGoose:
   def nextStep(self):
     if self.alive:
       self._age += 1
+      
     self._stepReward = 0
     self._wasAlive = self.alive
     self._wasKilled = False
@@ -57,10 +58,10 @@ class CGoose:
     return
   
   def starve(self):
-    self._stepReward += self._configs.get('starve reward', 0)
     self.body.pop()
     
     if len(self.body) < 1:
+      self._stepReward += self._configs.get('starve reward', 0)
       self.die('Starved.')
     return
   
@@ -69,10 +70,19 @@ class CGoose:
       self._stepReward += self._configs.get('kill reward', 0)
     return
   
+  def opponentDeath(self):
+    if self.alive:
+      self._stepReward += self._configs.get('opponent death reward', 0)
+    return
+  
   def killed(self):
     if self._wasKilled and self._wasAlive:
       self._stepReward += self._configs.get('killed reward', 0)
       self._deathReason = 'Killed by enemy' 
+    return
+
+  def survived(self):
+    self._stepReward += self._configs.get('survived reward', 0)
     return
 
   def state(self, food, geese, step):
@@ -97,19 +107,24 @@ class CGoose:
       'was killed': self._wasKilled,
     }
   
-  def score(self, v):
-    self._score = v
-    return v
-     
+  def score(self, v=None):
+    self._score = self._score if v is None else v
+    return self._score
+   
 class CHGEnvironment:
-  def __init__(self, params):
+  def __init__(self, params=None, replay=None):
+    self.isReplay = not (replay is None)
+    if self.isReplay:
+      self._replay = replay
+      self._replayInd = 0
+      
     self._params = params
     self.agents = self._agents = params.get('agents', 4)
     self._rows = params.get('rows', 7)
     self._columns = params.get('columns', 11)
     self._hungerRate = params.get('hunger rate', 40)
     self._minFood = params.get('min food', 2)
-    self._minPlayers = params.get('min players', 0)
+    self._minPlayers = params.get('min players', 1)
     self._seed = params.get('seed', None)
     self._episodeSteps = params.get('episode steps', 200)
     
@@ -122,6 +137,11 @@ class CHGEnvironment:
     return
   
   def reset(self):
+    if self.isReplay:
+      self._replayInd = 0
+    else:
+      self._replay = []
+
     self._random = random.Random(self._seed)
     self._step = 0
     self._food = set()
@@ -131,12 +151,31 @@ class CHGEnvironment:
     self._geese = [CGoose(i, self._sampleCell(), self._params) for i in range(self._agents)]
     return self.state
   
+  def _save(self, data):
+    if not self.isReplay:
+      self._replay.append(data)
+    return
+  
+  def _next(self, kind):
+    k, res = self._replay[self._replayInd]
+    assert k == kind
+    self._replayInd += 1
+    return res
+
   def step(self, actions):
+    for goose in self._geese:
+      goose.nextStep()
+
+    if self.done: return
+    
+    if self.isReplay:
+      actions = self._next('step')
+
+    self._save(('step', list(actions)))
     self._step += 1
     
     hungerStrike = (self._step % self._hungerRate == 0)
     for goose in self._geese:
-      goose.nextStep()
       # If hunger strikes remove from the tail.
       if hungerStrike and goose.alive:
         goose.starve()
@@ -145,6 +184,31 @@ class CHGEnvironment:
       self._perform(goose, action)
     ######
     # check colliding NEW POSITION of heads
+    self._resolveCollisions()
+    ########
+    self._spawnFood()
+    ######
+    if self.done:
+      for goose in self._geese:
+        if goose.alive:
+          # Boost the survivor's reward to maximum
+          goose.score(2 * self._episodeSteps + len(goose.body))
+          goose.survived()
+    return
+  
+  def _gooseCollide(self, ind):
+    goose = self._geese[ind]
+    if not goose.alive:
+      return None
+    
+    head = goose.body[0]
+    for i, enemy in enumerate(self._geese):
+      if enemy.alive and not(i == ind):
+        if head in enemy.body:
+          return enemy
+    return None
+  
+  def _resolveCollisions(self):
     collideWith = [self._gooseCollide(ind) for ind, _ in enumerate(self._geese)]
     for i, killer in enumerate(collideWith):
       if not (killer is None):
@@ -159,27 +223,11 @@ class CHGEnvironment:
       if not (killer is None):
         if killer.alive:
           self._geese[i].killed()
-        
-    self._spawnFood()
-    ######
-    if self.done:
-      for goose in self._geese:
-        if goose.alive:
-          # Boost the survivor's reward to maximum
-          goose.score(2 * self._episodeSteps + len(goose.body))
-    return self.state
-  
-  def _gooseCollide(self, ind):
-    goose = self._geese[ind]
-    if not goose.alive:
-      return None
     
-    head = goose.body[0]
-    for i, enemy in enumerate(self._geese):
-      if enemy.alive and not(i == ind):
-        if head in enemy.body:
-          return enemy
-    return None
+    if any(not(x is None) for x in collideWith):
+      for goose in self._geese:
+        goose.opponentDeath()
+    return
   
   @property
   def state(self):
@@ -192,7 +240,7 @@ class CHGEnvironment:
   @property
   def done(self):
     alive = sum(1 for goose in self._geese if goose.alive)
-    if alive < self._minPlayers: return True
+    if alive <= self._minPlayers: return True
     if self._episodeSteps < self._step: return True
     return False
   
@@ -203,6 +251,9 @@ class CHGEnvironment:
     return needed_food
 
   def _sampleCell(self):
+    if self.isReplay:
+      return self._next('cell')
+    
     freeCells = list(range(self._columns * self._rows))
     for x in self._food:
       freeCells.remove(x)
@@ -211,7 +262,9 @@ class CHGEnvironment:
       for x in goose.body:
         if x in freeCells: freeCells.remove(x)
 
-    return self._random.choice(freeCells)
+    res = self._random.choice(freeCells)
+    self._save(('cell', res))
+    return res
 
   def _translate(self, position: int, direction: Action) -> int:
     rows, columns = self._rows, self._columns
@@ -237,3 +290,6 @@ class CHGEnvironment:
       self._food.remove(pos)
       return True
     return False
+  
+  def replay(self):
+    return self._replay

@@ -1,17 +1,19 @@
 import numpy as np
+import os
 
-def discountedWaves(obstacles, start, N, discount=0.99):
-  res = np.zeros_like(obstacles, np.float)
+def discountedWaves_centered(obstacles):
+  res = np.zeros_like(obstacles, np.uint8)
   w,h = obstacles.shape
   directions = np.array([[1, 0], [0, 1], [0, -1], [-1, 0]])
   
-  res[start] = 1# - obstacles[start]
+  start = (w//2, h//2)
+  res[start] = 1
   waveN = 1
-  coords = np.zeros((100 + 4 * N, 2), np.uint16)
+  coords = np.zeros((100 + 4 * np.max(obstacles.shape), 2), np.uint8)
   coords[0] = start
   coordN = 1
 
-  while waveN <= N:
+  while True:
     cN = 0
     for pt in coords[:coordN]:
       for d in directions:
@@ -27,5 +29,16 @@ def discountedWaves(obstacles, start, N, discount=0.99):
     coordN = cN
     
   res[start] = 1 - obstacles[start]
-  res /= waveN
+  res[0 == res] = waveN
+  return res
+
+def discountedWaves(obstacles, start, N):
+  x,y = start
+  chunk = obstacles[x-N:x+N+1, y-N:y+N+1]
+  distMap = discountedWaves_centered(chunk)
+  
+  DMax = float(distMap.max())
+  res = np.full_like(obstacles, DMax, np.float16)
+  res[x-N:x+N+1, y-N:y+N+1] = distMap
+  res /= DMax
   return res

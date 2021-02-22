@@ -1,7 +1,49 @@
-from CAgent import CAgent
+from datetime import datetime
+import tarfile
+import os
+from io import BytesIO
 
-GLOBAL_AGENT = CAgent(model=...)
+SUBMISSION_FILE = 'submission-%s.tar.gz' % (datetime.now().strftime('%Y-%m-%d'))
+
+INCLUDES = [
+  'model.py',
+  'weights/agent-0.h5',
+  'Agents/CAgent.py',
+  'Agents/CAgentState.py',
+  'Agents/discountedWaves.py'
+]
+
+AGENT_CODE = """
+import os
+import sys
+
+FOLDER = '/kaggle_simulations/agent/'
+sys.path.append(FOLDER)
+#################
+import model
+from Agents.CAgent import CAgent
+from Agents.CAgentState import LO_SHAPE
+
+network = model.createModel(shape=LO_SHAPE)
+network.load_weights(os.path.join(FOLDER, 'weights/agent-0.h5'))
+
+MY_AGENT = CAgent(model=network)
+MY_AGENT.reset()
 
 def agent(obs_dict, config_dict):
-  global GLOBAL_AGENT
-  return GLOBAL_AGENT.play(obs_dict, config_dict)
+  global MY_AGENT
+  return MY_AGENT(obs_dict, config_dict)
+"""
+
+FOLDER = os.path.dirname(__file__)
+print(SUBMISSION_FILE)
+with tarfile.open(SUBMISSION_FILE, "w:gz") as tar:
+  for file in INCLUDES:
+    tar.add(os.path.join(FOLDER, file), arcname=file)
+  
+  fi = tarfile.TarInfo('main.py')
+  fi.size = len(AGENT_CODE)
+  s = BytesIO()
+  s.write(AGENT_CODE.encode('utf-8'))
+  s.seek(0)
+  tar.addfile(fi, s)

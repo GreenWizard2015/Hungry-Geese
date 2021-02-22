@@ -3,12 +3,18 @@ import Agents
 import numpy as np
 from CHGEnvironment import CHGEnvironment
 
-def collectReplays(model, agentsN, envN, agentsParams={}, envParams={}):
+class CDummyNetwork:
+  def predict(self, X):
+    return X
+
+DummyNetwork = CDummyNetwork()
+
+def collectReplays(models, agentsKinds, envN, envParams={}):
+  agentsN = len(agentsKinds)
   environments = [CHGEnvironment({**envParams, 'agents': agentsN}) for _ in range(envN)]
   def makeAgent(index):
-    if 2 <= index:
-      return Agents.CGreedyAgent()
-    return Agents.CAgent(*agentsParams)
+    spawnMe = agentsKinds[index]
+    return spawnMe()
   
   EA = [
     (env, [makeAgent(i) for i in range(agentsN)]) for env in environments
@@ -18,64 +24,82 @@ def collectReplays(model, agentsN, envN, agentsParams={}, envParams={}):
     
   replays = [[] for _ in allAgents]
   scores = [0 for _ in allAgents]
+  isAlive = [True for _ in allAgents]
   for e in environments: e.reset()
   for a in allAgents: a.reset()
   
   def encodedStates():
     res = []
     observations = []
+    Details = []
     for env, agents in EA:
       grid = None
+
       for obs, agent in zip(env.state, agents):
-        observations.append(obs)
+        state = None
+        details = None
         if obs['alive']:
           if grid is None:
             grid = agent.preprocessObservations(obs['observation'], env.configuration)
-            
-          res.append(
-            agent.processObservations(obs['observation'], env.configuration, grid.copy(), True)
+          
+          state, details = agent.processObservations(
+            obs['observation'], env.configuration, grid.copy(), True, details=True
           )
         else:
-          res.append(
-            agent.processObservations(obs['observation'], env.configuration, None, False)
-          )
-    return res, observations
+          state = agent.processObservations(obs['observation'], env.configuration, None, False)
+          
+        res.append(state)
+        observations.append(obs)
+        Details.append(details)
+    return res, observations, Details
   
   deathReasons = ['' for _ in allAgents]
-  prevStates, _ = encodedStates()
+  prevStates, _, prevDetails = encodedStates()
+  actionsNames = [None] * len(allAgents)
+  actionsID = [None] * len(allAgents)
   while not all(env.done for env in environments):
-    predictions = model.predict(np.array(prevStates))
-    actions = [agent.choiceAction(pred) for agent, pred in zip(allAgents, predictions)]
-    actionsNames, actionsID = zip(*actions)
-    
+    #######
+    for i, model in enumerate(models):
+      agentsIDs = [(j * agentsN) + i for j in range(envN) if isAlive[(j * agentsN) + i]]
+      if agentsIDs:
+        predictions = model.predict([prevStates[j] for j in agentsIDs])
+        actions = [allAgents[j].choiceAction(pred) for j, pred in zip(agentsIDs, predictions)]
+        for (actName, actID), agentID in zip(actions, agentsIDs):
+          actionsNames[agentID] = actName
+          actionsID[agentID] = actID
+    ######
     for i, env in enumerate(environments):
       env.step(actionsNames[(i * agentsN):((i + 1) * agentsN)])
       
-    states, observations = encodedStates()
-    for i, obs in enumerate(observations):
+    states, observations, Details = encodedStates()
+    for i, (obs, details) in enumerate(zip(observations, prevDetails)):
       if obs['was alive']:
-        scores[i] = obs['score']
         replays[i].append((
-          prevStates[i], actionsID[i], obs['step reward'], states[i], 1 - obs['was killed']
+          prevStates[i], actionsID[i], obs['step reward'], states[i], 1 - obs['was killed'], details
         ))
+        
+        scores[i] = obs['score']
         deathReasons[i] = obs['death reason']
     ##
     prevStates = states
+    prevDetails = Details
   ##
   ranks = []
   kinds = []
   for env, agents in EA:
-    ages = [x['age'] for x in env.state]
-    byAge = list(sorted(range(len(ages)), key=lambda x: ages[x], reverse=True))
+    agentsScores = [x['score'] for x in env.state]
+    ranked = np.argsort(np.argsort(-np.array(agentsScores)))
+    
     for i, agent in enumerate(agents):
-      ranks.append(1 + byAge[i])
-      kinds.append(agent.kind)
+      ranks.append(1 + ranked[i])
+      kinds.append(agents[i].kind)
 
   return replays, {
     'scores': scores,
     'ranks': ranks,
     'kinds': kinds,
     'death by': deathReasons,
+    'raw replays': [e.replay() for e in environments]
   }
   
 def trackScores(scores, metrics, levels=[.1, .3, .5, .75, .9], metricName='scores'):

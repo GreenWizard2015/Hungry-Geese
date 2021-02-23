@@ -9,7 +9,7 @@ class CGoose:
     self._prevAction = None
     self._score = 0
     self._configs = configs
-    self._deathReason = 'Alive'
+    self._deathReason = ''
     self._age = 0
     self.nextStep()
     return
@@ -82,7 +82,9 @@ class CGoose:
     return
 
   def survived(self):
-    self._stepReward += self._configs.get('survived reward', 0)
+    if self.alive:
+      self._stepReward += self._configs.get('survived reward', 0)
+      self._deathReason = 'Alive'
     return
 
   def state(self, food, geese, step):
@@ -240,7 +242,7 @@ class CHGEnvironment:
   @property
   def done(self):
     alive = sum(1 for goose in self._geese if goose.alive)
-    if alive <= self._minPlayers: return True
+    if alive < self._minPlayers: return True
     if self._episodeSteps < self._step: return True
     return False
   

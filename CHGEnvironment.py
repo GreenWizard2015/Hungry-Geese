@@ -172,8 +172,9 @@ class CHGEnvironment:
     
     if self.isReplay:
       actions = self._next('step')
-
-    self._save(('step', list(actions)))
+    else:
+      self._save(('step', [str(x if goose.alive else None) for goose, x in zip(self._geese, actions)]))
+    
     self._step += 1
     
     hungerStrike = (self._step % self._hungerRate == 0)

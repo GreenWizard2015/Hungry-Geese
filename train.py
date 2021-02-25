@@ -71,8 +71,9 @@ def collectExperience(agents, memory, params):
       'RLRewards_%s' % kind: [RLRewards[i] for i in replaysID],
     })
   
-    winN = sum(1 for rank, k in zip(ranks, kinds) if (rank == 1) and (kind == k))
-    winRates[kind] = winN / float(params['episodes'])
+    winN = sum(1 for i in replaysID if ranks[i] == 1)
+    winRates[kind] = winN / float(len(replaysID))
+    
   print('Win rates: ', winRates)
   return stats, winRates
 ###############
@@ -225,10 +226,11 @@ network.compile(optimizer=Adam(lr=1e-4, clipnorm=1.), loss=[
   lambda _,x: tf.math.reduce_mean(entropyOf(x)), # ensembledQValues
   Huber(delta=1.), # GoodDuelDQN
   Huber(delta=1.), # BadDuelDQN
-], loss_weights=[0.0, 1, 1])
+], loss_weights=[0.05, 1, 1])
 
 # calc GAMMA so  +-1 reward after N steps would give +-0.001 for current step
 GAMMA = math.pow(0.001, 1.0 / 50.0)
+print('Gamma: %.5f' % GAMMA)
 
 DEFAULT_LEARNING_PARAMS = {
   'shape': MODEL_SHAPE,
@@ -251,7 +253,7 @@ DEFAULT_LEARNING_PARAMS = {
   
   'epochs': 1000,
   'train episodes': lambda _: 64,
-  'test episodes': 64 * 2,
+  'test episodes': 128,
 
   'explore rate': lambda e: max((.05 * .9**e, 1e-3)),
   

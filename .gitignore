@@ -6,3 +6,5 @@ __pycache__
 chart.jpg
 /charts
 /weights
+/replays
+TRASH_*.py

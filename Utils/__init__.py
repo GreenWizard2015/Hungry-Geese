@@ -129,19 +129,23 @@ def trackScores(scores, metrics, levels=[.1, .3, .5, .75, .9], metricName='score
     series('top %.0f%%' % (level * 100)).append(orderedScores[int(N * level)])
   return
 
-def plotData2file(data, filename, metricName):
+def plotSeries2file(data, filename, title):
   plt.clf()
 
   fig = plt.figure()
   axe = fig.subplots()
-  for name, dataset in data[metricName].items():
+  for name, dataset in data.items():
     axe.plot(dataset, label=name)
-  axe.title.set_text(metricName)
+  axe.title.set_text(title)
   axe.legend(loc='upper left')
 
   fig.tight_layout()
   fig.savefig(filename)
   plt.close(fig)
+  return
+
+def plotData2file(data, filename, metricName):
+  plotSeries2file(data[metricName], filename, metricName)
   return
 
 def profileAndHalt(f):

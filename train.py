@@ -61,6 +61,7 @@ def collectExperience(agents, memory, params):
   for replay in stats['raw replays']:
     memory.storeReplay(replay)
     
+  winRates = {}
   stats = {}
   for kind in kinds:
     replaysID = [i for i, k in enumerate(kinds) if k == kind]
@@ -70,9 +71,10 @@ def collectExperience(agents, memory, params):
       'RLRewards_%s' % kind: [RLRewards[i] for i in replaysID],
     })
   
-  winN = sum(1 for rank, kind in zip(ranks, kinds) if (rank == 1) and (kind == 'network'))
-  winRate = winN / float(params['episodes'])
-  return stats, winRate
+    winN = sum(1 for rank, k in zip(ranks, kinds) if (rank == 1) and (kind == k))
+    winRates[kind] = winN / float(params['episodes'])
+  print('Win rates: ', winRates)
+  return stats, winRates
 ###############
 def train(model, targetModel, expertModel, memory, params):
 #   EAcc = expertModel.train(
@@ -115,6 +117,9 @@ def train(model, targetModel, expertModel, memory, params):
 def learn_environment(model, params):
   NAME = params['name']
   metrics = {}
+  wrHistory = {
+    'network': []
+  }
 
   memory = CHGExperienceStorage(params['experience storage'])
   expertModel = SADiscriminator.CDiscriminator(
@@ -174,17 +179,22 @@ def learn_environment(model, params):
     ##################
     # test
     print('Testing...')
-    stats,  winRate = testModel(EXPLORE_RATE)
+    stats, winRates = testModel(EXPLORE_RATE)
     for k, v in stats.items():
       Utils.trackScores(v, metrics, metricName=k)
+    
+    for k, v in winRates.items():
+      if k not in wrHistory:
+        wrHistory[k] = [0] * epoch
+      wrHistory[k].append(v)
     ##################
     
     print('Scores sum: %.5f' % sum(stats['Score_network']))
     
     os.makedirs('weights', exist_ok=True)
     model.save_weights('weights/%s-latest.h5' % NAME)
-    if params['min win rate'] <= winRate:
-      print('save model (win rate: %.2f%%)' % (100.0 * winRate))
+    if params['min win rate'] <= winRates['network']:
+      print('save model (win rate: %.2f%%)' % (100.0 * winRates['network']))
       model.save_weights('weights/%s-epoch-%06d.h5' % (NAME, epoch))
       ########
       LBM = params['model clone'](model)
@@ -198,6 +208,7 @@ def learn_environment(model, params):
     os.makedirs('charts/%s' % NAME, exist_ok=True)
     for metricName in metrics.keys():
       Utils.plotData2file(metrics, 'charts/%s/%s.jpg' % (NAME, metricName), metricName)
+    Utils.plotSeries2file(wrHistory, 'charts/%s/win_rates.jpg' % (NAME,), 'Win rates')
     print('Epoch %d finished in %.1f sec.' % (epoch, time.time() - T))
     print('------------------')
 ############

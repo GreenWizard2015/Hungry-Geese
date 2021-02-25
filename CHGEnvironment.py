@@ -7,6 +7,7 @@ class CGoose:
     self.alive = True
     self.body = [head]
     self._prevAction = None
+    self._nextAction = None
     self._score = 0
     self._configs = configs
     self._deathReason = ''
@@ -90,7 +91,7 @@ class CGoose:
   def state(self, food, geese, step):
     return {
       'age': self._age,
-      'action': str(self._prevAction),
+      'action': self._prevAction,
       'reward': self._score,
       'score': self._score,
       'step reward': self._stepReward,
@@ -100,7 +101,8 @@ class CGoose:
         'step': step,
         'geese': geese,
         'food': food,
-        'index': self.index
+        'index': self.index,
+        'next action': self._nextAction,
       },
       'status': 'ACTIVE' if self.alive else 'DONE',
       'death reason': self._deathReason,
@@ -112,9 +114,14 @@ class CGoose:
   def score(self, v=None):
     self._score = self._score if v is None else v
     return self._score
+  
+  def nextAction(self, action):
+    self._nextAction = action
+    return
    
 class CHGEnvironment:
-  def __init__(self, params=None, replay=None):
+  def __init__(self, params=None):
+    replay = params.get('replay', None)
     self.isReplay = not (replay is None)
     if self.isReplay:
       self._replay = replay
@@ -158,17 +165,18 @@ class CHGEnvironment:
       self._replay.append(data)
     return
   
-  def _next(self, kind):
+  def _next(self, kind, moveNext=True):
     k, res = self._replay[self._replayInd]
     assert k == kind
-    self._replayInd += 1
+    if moveNext:
+      self._replayInd += 1
     return res
 
-  def step(self, actions):
+  def step(self, actions=None):
     for goose in self._geese:
       goose.nextStep()
 
-    if self.done: return
+    if self.done: return actions
     
     if self.isReplay:
       actions = self._next('step')
@@ -197,7 +205,7 @@ class CHGEnvironment:
           # Boost the survivor's reward to maximum
           goose.score(2 * self._episodeSteps + len(goose.body))
           goose.survived()
-    return
+    return actions
   
   def _gooseCollide(self, ind):
     goose = self._geese[ind]
@@ -238,6 +246,10 @@ class CHGEnvironment:
     geese = []
     for goose in self._geese:
       geese.append(goose.body if goose.alive else [])
+      
+    if self.isReplay and (self._replayInd < len(self._replay)):
+      for goose, act in zip(self._geese, self._next('step', moveNext=False)):
+        goose.nextAction(act)
     return [goose.state(food, geese, self._step) for goose in self._geese]
   
   @property

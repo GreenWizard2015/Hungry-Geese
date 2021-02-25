@@ -28,10 +28,10 @@ import SADiscriminator
 from Agents.CAgentState import LO_SHAPE
 from collections import defaultdict
 
-def collectExperience(model, memory, params):
+def collectExperience(agents, memory, params):
   trajectories, stats = collectReplays(
-    models=[model, Utils.DummyNetwork, Utils.DummyNetwork, Utils.DummyNetwork],
-    agentsKinds=[Agents.CAgent, Agents.CGreedyAgent, Agents.CGreedyAgent, Agents.CGreedyAgent],
+    models=[x[0] for x in agents],
+    agentsKinds=[x[1] for x in agents],
     envN=params['episodes'],
     envParams=params.get('env', {})
   )
@@ -43,7 +43,7 @@ def collectExperience(model, memory, params):
   
   deathBy = stats['death by']
   deathReasons = set(deathBy)
-  
+    
   for kind in kindsSet:
     print(kind, {
       reason: sum(
@@ -58,6 +58,9 @@ def collectExperience(model, memory, params):
     RLRewards.append(sum(x[2] for x in traj))
     memory.store(traj, rank)
 
+  for replay in stats['raw replays']:
+    memory.storeReplay(replay)
+    
   stats = {}
   for kind in kinds:
     replaysID = [i for i, k in enumerate(kinds) if k == kind]
@@ -66,7 +69,10 @@ def collectExperience(model, memory, params):
       'Score_%s' % kind: [scores[i] for i in replaysID],
       'RLRewards_%s' % kind: [RLRewards[i] for i in replaysID],
     })
-  return stats
+  
+  winN = sum(1 for rank, kind in zip(ranks, kinds) if (rank == 1) and (kind == 'network'))
+  winRate = winN / float(params['episodes'])
+  return stats, winRate
 ###############
 def train(model, targetModel, expertModel, memory, params):
 #   EAcc = expertModel.train(
@@ -111,12 +117,24 @@ def learn_environment(model, params):
   metrics = {}
 
   memory = CHGExperienceStorage(params['experience storage'])
-  expertModel = SADiscriminator.CDiscriminator(stateShape=params['shape'], actionsN=3)
+  expertModel = SADiscriminator.CDiscriminator(
+    stateShape=params['shape'],
+    actionsN=params['experience storage']['experts actions']['range']
+  )
   ######################################################
+  lastBestModels = [
+    (Utils.DummyNetwork, Agents.CGreedyAgent),
+    (Utils.DummyNetwork, Agents.CGreedyAgent),
+  ]
+  
   def testModel(EXPLORE_RATE):
     T = time.time()
     res = collectExperience(
-      CNoisedNetwork(network, EXPLORE_RATE),
+      [ # agents
+        (CNoisedNetwork(network, EXPLORE_RATE), Agents.CAgent),
+        *lastBestModels,
+        (Utils.DummyNetwork, Agents.CGreedyAgent)
+      ],
       memory,
       {
         'episodes': params['test episodes'],
@@ -129,12 +147,10 @@ def learn_environment(model, params):
   # collect some experience
   for epoch in range(2):
     testModel(EXPLORE_RATE=0.8)
-
+    
   #######################
   targetModel = params['model clone'](model)
   targetModel.set_weights(model.get_weights())
-  
-  bestModelScore = -float('inf')
   for epoch in range(params['epochs']):
     T = time.time()
 
@@ -151,25 +167,32 @@ def learn_environment(model, params):
         'model clone': params['model clone']
       }
     )
+    print('Losses:')
     for k, v in trainLoss.items():
-      print('Avg. %s loss: %.4f' % (k, v))
+      print('Avg. %s: %.4f' % (k, v))
+    print('')
     ##################
     # test
     print('Testing...')
-    stats = testModel(EXPLORE_RATE)
+    stats,  winRate = testModel(EXPLORE_RATE)
     for k, v in stats.items():
       Utils.trackScores(v, metrics, metricName=k)
     ##################
     
-    scoreSum = sum(stats['Score_network'])
-    print('Scores sum: %.5f' % scoreSum)
+    print('Scores sum: %.5f' % sum(stats['Score_network']))
     
     os.makedirs('weights', exist_ok=True)
     model.save_weights('weights/%s-latest.h5' % NAME)
-    if bestModelScore < scoreSum:
-      print('save best model (%.2f => %.2f)' % (bestModelScore, scoreSum))
-      bestModelScore = scoreSum
+    if params['min win rate'] <= winRate:
+      print('save model (win rate: %.2f%%)' % (100.0 * winRate))
       model.save_weights('weights/%s-epoch-%06d.h5' % (NAME, epoch))
+      ########
+      LBM = params['model clone'](model)
+      LBM.set_weights(model.get_weights())
+      lastBestModels = [
+        (CNoisedNetwork(LBM, noise=0.0), lambda: Agents.CAgent(kind='LBM')),
+        lastBestModels[0]
+      ]
     
     ##################
     os.makedirs('charts/%s' % NAME, exist_ok=True)
@@ -191,11 +214,11 @@ network.compile(optimizer=Adam(lr=1e-4, clipnorm=1.), loss=[
   lambda _,x: tf.math.reduce_mean(entropyOf(x)), # ensembledQValues
   Huber(delta=1.), # GoodDuelDQN
   Huber(delta=1.), # BadDuelDQN
-], loss_weights=[0.05, 1, 1])
+], loss_weights=[0.0, 1, 1])
 
 # calc GAMMA so  +-1 reward after N steps would give +-0.001 for current step
 GAMMA = math.pow(0.001, 1.0 / 50.0)
-print('Gamma: %.04f' % GAMMA)
+
 DEFAULT_LEARNING_PARAMS = {
   'shape': MODEL_SHAPE,
   'model clone': lambda _: M.createModel(shape=MODEL_SHAPE),
@@ -208,11 +231,16 @@ DEFAULT_LEARNING_PARAMS = {
       'range': 3,
       'mask': np.inf
     },
+    
+    'replays': {
+      'folder': os.path.join(os.path.dirname(__file__), 'replays'),
+      'replays per chunk': 1000,
+    },
   },
   
   'epochs': 1000,
   'train episodes': lambda _: 64,
-  'test episodes': 64,
+  'test episodes': 64 * 2,
 
   'explore rate': lambda e: max((.05 * .9**e, 1e-3)),
   
@@ -228,6 +256,8 @@ DEFAULT_LEARNING_PARAMS = {
     'opponent death reward': +5,
     'killed reward': -1,
   },
+  
+  'min win rate': .5,
 }
 #######################
 for i in range(1):

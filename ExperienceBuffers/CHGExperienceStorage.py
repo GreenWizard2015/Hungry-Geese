@@ -2,6 +2,7 @@ import numpy as np
 from .CebEpisodic import CebEpisodic
 from ExperienceBuffers.CMulticastUpdater import collectSamples, sampleFromBuffer
 from ExperienceBuffers.CebWeightedLinear import CebWeightedLinear
+from ExperienceBuffers.CHGReplaysStorage import CHGReplaysStorage
 
 class CHGExperienceStorage:
   def __init__(self, params):
@@ -24,6 +25,8 @@ class CHGExperienceStorage:
     
     self._expertsActionsN = params['experts actions']['range']
     self._expertsActionsMask = params['experts actions']['mask']
+    
+    self._replaysStorage = CHGReplaysStorage(params['replays'])
     return
   
   def _encodeActions(self, acts):
@@ -84,3 +87,6 @@ class CHGExperienceStorage:
     (states, _, _, _, _, futureActions, _), _ = buffer.sample(batch_size)
     return [states, futureActions]
   
+  def storeReplay(self, replay):
+    self._replaysStorage.store(replay)
+    return

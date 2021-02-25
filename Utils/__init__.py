@@ -90,9 +90,9 @@ def collectReplays(models, agentsKinds, envN, envParams={}):
     agentsScores = [x['score'] for x in env.state]
     ranked = np.argsort(np.argsort(-np.array(agentsScores)))
     
-    for i, agent in enumerate(agents):
-      ranks.append(1 + ranked[i])
-      kinds.append(agents[i].kind)
+    for rank, agent in zip(ranked, agents):
+      ranks.append(1 + rank)
+      kinds.append(agent.kind)
 
   return replays, {
     'scores': scores,
@@ -101,6 +101,15 @@ def collectReplays(models, agentsKinds, envN, envParams={}):
     'death by': deathReasons,
     'raw replays': [e.replay() for e in environments]
   }
+  
+def expandReplays(replay, envParams={}):
+  return collectReplays(
+    [DummyNetwork, DummyNetwork, DummyNetwork, DummyNetwork],
+    [Agents.CReplayAgent, Agents.CReplayAgent, Agents.CReplayAgent, Agents.CReplayAgent],
+    envN=1,
+    envParams={**envParams, 'replay': replay}
+  )
+
   
 def trackScores(scores, metrics, levels=[.1, .3, .5, .75, .9], metricName='scores'):
   if metricName not in metrics:

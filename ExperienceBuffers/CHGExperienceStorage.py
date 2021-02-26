@@ -13,12 +13,13 @@ class CHGExperienceStorage:
     BOOTSTRAPPED_STEPS = params['bootstrapped steps']
     self._DISCOUNTS = GAMMA ** np.arange(BOOTSTRAPPED_STEPS + 1)
     
-    commonMemory = CebWeightedLinear(maxSize=5 * 200 * 1000)
+    MEM_SIZE = 2 * 200 * 1000
+    commonMemory = CebWeightedLinear(maxSize=MEM_SIZE)
     self._byRank = {
       # 1: CebEpisodic(maxSize=1000),
-      1: CebWeightedLinear(maxSize=5 * 200 * 1000),
+      1: CebWeightedLinear(maxSize=MEM_SIZE),
       # 2: CebEpisodic(maxSize=2000),
-      2: CebWeightedLinear(maxSize=5 * 200 * 1000),
+      2: CebWeightedLinear(maxSize=MEM_SIZE),
       3: commonMemory,
       4: commonMemory,
     }

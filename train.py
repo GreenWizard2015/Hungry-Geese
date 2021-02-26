@@ -232,6 +232,19 @@ network.compile(optimizer=Adam(lr=1e-4, clipnorm=1.), loss=[
 GAMMA = math.pow(0.001, 1.0 / 50.0)
 print('Gamma: %.5f' % GAMMA)
 
+ENVIRONMENT_SETTINGS ={
+  'episode steps': 200,
+  'min players': 2,
+  ##############
+  'survived reward': +10,
+  'kill reward': +.5,
+  'grow reward': lambda x: 0.85 ** (len(x) - 1),
+  'starve reward': -10,
+  'death reward': -10,
+  'opponent death reward': +5,
+  'killed reward': -1,
+} 
+
 DEFAULT_LEARNING_PARAMS = {
   'shape': MODEL_SHAPE,
   'model clone': lambda _: M.createModel(shape=MODEL_SHAPE),
@@ -239,6 +252,10 @@ DEFAULT_LEARNING_PARAMS = {
     'gamma': GAMMA,
     'bootstrapped steps': 2,
     'replays batch size': 64,
+    'fetch replays': {
+      'replays': 256,
+      'batch interval': 200,
+    },
     
     'experts actions': {
       'range': 3,
@@ -248,28 +265,17 @@ DEFAULT_LEARNING_PARAMS = {
     'replays': {
       'folder': os.path.join(os.path.dirname(__file__), 'replays'),
       'replays per chunk': 1000,
+      'env': ENVIRONMENT_SETTINGS,
     },
   },
   
   'epochs': 1000,
-  'train episodes': lambda _: 64,
+  'train episodes': lambda _: 128,
   'test episodes': 128,
 
   'explore rate': lambda e: max((.05 * .9**e, 1e-3)),
   
-  'env': {
-    'episode steps': 200,
-    'min players': 2,
-    ##############
-    'survived reward': +10,
-    'kill reward': +.5,
-    'grow reward': lambda x: 0.85 ** (len(x) - 1),
-    'starve reward': -10,
-    'death reward': -10,
-    'opponent death reward': +5,
-    'killed reward': -1,
-  },
-  
+  'env': ENVIRONMENT_SETTINGS,
   'min win rate': .5,
 }
 #######################

@@ -3,6 +3,7 @@ from .CebEpisodic import CebEpisodic
 from ExperienceBuffers.CMulticastUpdater import collectSamples, sampleFromBuffer
 from ExperienceBuffers.CebWeightedLinear import CebWeightedLinear
 from ExperienceBuffers.CHGReplaysStorage import CHGReplaysStorage
+import time
 
 class CHGExperienceStorage:
   def __init__(self, params):
@@ -12,12 +13,12 @@ class CHGExperienceStorage:
     BOOTSTRAPPED_STEPS = params['bootstrapped steps']
     self._DISCOUNTS = GAMMA ** np.arange(BOOTSTRAPPED_STEPS + 1)
     
-    commonMemory = CebWeightedLinear(maxSize=200 * 1000)
+    commonMemory = CebWeightedLinear(maxSize=5 * 200 * 1000)
     self._byRank = {
       # 1: CebEpisodic(maxSize=1000),
-      1: CebWeightedLinear(maxSize=200 * 1000),
+      1: CebWeightedLinear(maxSize=5 * 200 * 1000),
       # 2: CebEpisodic(maxSize=2000),
-      2: CebWeightedLinear(maxSize=200 * 1000),
+      2: CebWeightedLinear(maxSize=5 * 200 * 1000),
       3: commonMemory,
       4: commonMemory,
     }
@@ -27,6 +28,9 @@ class CHGExperienceStorage:
     self._expertsActionsMask = params['experts actions']['mask']
     
     self._replaysStorage = CHGReplaysStorage(params['replays'])
+    self._fetchReplayN = params['fetch replays']['replays']
+    self._fetchReplayInterval = params['fetch replays']['batch interval']
+    self._batchID = 0
     return
   
   def _encodeActions(self, acts):
@@ -67,7 +71,8 @@ class CHGExperienceStorage:
   
   def sampleReplays(self, batch_size=None):
     if batch_size  is None:
-      batch_size = self._replaysBatchSize      
+      batch_size = self._replaysBatchSize
+    self._fetchStoredReplays()
     # sample from each of ranks buffer
     def sampler():
       while True:
@@ -80,6 +85,7 @@ class CHGExperienceStorage:
       batch_size, sampler,
       samplesPerCall=1 + int(batch_size / (len(self._byRank) * 4))
     )
+    self._batchID += 1      
     return data
   
   def sampleExpertsActions(self, batch_size, sampleExpert):
@@ -89,4 +95,19 @@ class CHGExperienceStorage:
   
   def storeReplay(self, replay):
     self._replaysStorage.store(replay)
+    return
+  
+  def _fetchStoredReplays(self):
+    if (self._batchID % self._fetchReplayInterval) == 0:
+      T = time.time()
+      N = 0
+      for _ in range(self._fetchReplayN):
+        res = self._replaysStorage.sampleReplay()
+        if res:
+          trajectories, info = res
+          for traj, rank in zip(trajectories, info['ranks']):
+            self.store(traj, rank)
+          N += 1
+      print('Fetched %d from storage in %.1fms' % (N, (time.time() - T) * 1000.0))
+      
     return

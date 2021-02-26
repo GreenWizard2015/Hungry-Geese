@@ -1,12 +1,18 @@
 import json
 import hashlib
 import os
+import Utils
+import random
+import glob
+
 class CHGReplaysStorage:
   def __init__(self, params):
     self._folder = params['folder']
     self._replaysPerChunk = params['replays per chunk']
+    self._envParams = params['env']
     
     self._newChunk = []
+    self._sampledChunk = []
     return
   
   def store(self, replay):
@@ -25,3 +31,22 @@ class CHGReplaysStorage:
     
     self._newChunk = []
     return
+  
+  def _loadSamples(self):
+    if 0 < len(self._sampledChunk): return
+    
+    chunks = glob.glob(os.path.join(self._folder, '*.json'))
+    sel = random.choice(chunks)
+    with open(sel, 'r') as f:
+      self._sampledChunk = json.load(f)
+    return
+  
+  def sampleReplay(self):
+    self._loadSamples()
+    if 0 < len(self._sampledChunk):
+      ind = random.randrange(0, len(self._sampledChunk))
+      replay = self._sampledChunk[ind]
+      del self._sampledChunk[ind]
+      return Utils.expandReplays(replay, self._envParams)
+    return None
+    

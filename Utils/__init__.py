@@ -33,20 +33,15 @@ def collectReplays(models, agentsKinds, envN, envParams={}):
     observations = []
     Details = []
     for env, agents in EA:
-      grid = None
-
       for obs, agent in zip(env.state, agents):
         state = None
         details = None
         if obs['alive']:
-          if grid is None:
-            grid = agent.preprocessObservations(obs['observation'], env.configuration)
-          
           state, details = agent.processObservations(
-            obs['observation'], env.configuration, grid.copy(), True, details=True
+            obs['observation'], env.configuration, True, details=True
           )
         else:
-          state = agent.processObservations(obs['observation'], env.configuration, None, False)
+          state = agent.processObservations(obs['observation'], env.configuration, False)
           
         res.append(state)
         observations.append(obs)

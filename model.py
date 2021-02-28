@@ -57,7 +57,7 @@ def combineQValues(QNets):
 
   return tf.nn.softmax(Good * Bad)
 
-def createModel(shape, fixDimensions=True):
+def createModel(shape, fixDimensions=False):
   gameState = res = layers.Input(shape=shape)
   
   if fixDimensions:

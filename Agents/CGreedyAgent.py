@@ -1,6 +1,6 @@
 from kaggle_environments.envs.hungry_geese.hungry_geese import Observation, Configuration, \
 GreedyAgent, Action
-from .CAgentState import CAgentState, GlobalObservations
+from .CAgentState import CAgentState
 
 class CGreedyAgent:
   def __init__(self):
@@ -10,18 +10,13 @@ class CGreedyAgent:
     self._state = CAgentState()
     self._agent = None
     return
-  
-  def preprocessObservations(self, obs_dict, config_dict):
-    observation = Observation(obs_dict)
-    configuration = Configuration(config_dict)
-    return GlobalObservations(observation, configuration)
-  
-  def encodeObservations(self, obs_dict, config_dict, gstate, details=False):
-    observation = Observation(obs_dict)
-    configuration = Configuration(config_dict)
-    return self._state.local(observation, configuration, gstate, details)
 
-  def processObservations(self, obs_dict, config_dict, grid, alive=True, details=False):
+  def encodeObservations(self, obs_dict, config_dict, details=False):
+    observation = Observation(obs_dict)
+    configuration = Configuration(config_dict)
+    return self._state.local(observation, configuration, details)
+
+  def processObservations(self, obs_dict, config_dict, alive=True, details=False):
     if not alive: return self._state.EmptyObservations
     
     observation = Observation(obs_dict)
@@ -30,7 +25,7 @@ class CGreedyAgent:
     if self._agent is None:
       self._agent = GreedyAgent(configuration)
 
-    obs = self.encodeObservations(obs_dict, config_dict, grid, details)
+    obs = self.encodeObservations(obs_dict, config_dict, details)
     state, validAct, actionsMapping = obs[:3]
     
     self._agent.last_action = Action[self._state.last_action] # sync
@@ -51,10 +46,7 @@ class CGreedyAgent:
     return (self._actName, self._actID)
   
   def play(self, obs_dict, config_dict):
-    grid = self.processObservations(
-      obs_dict, config_dict,
-      self.preprocessObservations(obs_dict, config_dict)
-    )
+    grid = self.processObservations(obs_dict, config_dict)
     action, _ = self.choiceAction(None)
     return action, grid
   

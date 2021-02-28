@@ -25,7 +25,7 @@ import time
 import Utils
 import math
 import SADiscriminator
-from Agents.CAgentState import LO_SHAPE
+from Agents.CAgentState import EMPTY_OBSERVATION
 from collections import defaultdict
 
 def collectExperience(agents, memory, params):
@@ -78,6 +78,7 @@ def collectExperience(agents, memory, params):
   return stats, winRates
 ###############
 def train(model, targetModel, expertModel, memory, params):
+  T = time.time()
 #   EAcc = expertModel.train(
 #     samplesProvider=memory.sampleExpertsActions, 
 #     batchSize=64, batchesPerEpoch=8,
@@ -113,7 +114,13 @@ def train(model, targetModel, expertModel, memory, params):
       lossSum[k] += v[0]
     ###
 
-  return {k: v / params['episodes'] for k, v in lossSum.items()}
+  print('Training finished in %.1f sec.' % (time.time() - T))
+  trainLoss = {k: v / params['episodes'] for k, v in lossSum.items()}
+  print('Losses:')
+  for k, v in trainLoss.items():
+    print('Avg. %s: %.4f' % (k, v))
+  print('')
+  return
 
 def learn_environment(model, params):
   NAME = params['name']
@@ -166,17 +173,15 @@ def learn_environment(model, params):
     # Training
     if params.get('target update', lambda _: True)(epoch):
       targetModel.set_weights(model.get_weights())
-    trainLoss = train(
+    
+    train(
       model, targetModel, expertModel, memory,
       {
         'episodes': params['train episodes'](epoch),
         'model clone': params['model clone']
       }
     )
-    print('Losses:')
-    for k, v in trainLoss.items():
-      print('Avg. %s: %.4f' % (k, v))
-    print('')
+    
     ##################
     # test
     print('Testing...')
@@ -214,7 +219,7 @@ def learn_environment(model, params):
     print('------------------')
 ############
 
-MODEL_SHAPE = LO_SHAPE
+MODEL_SHAPE = EMPTY_OBSERVATION.shape
 network  = M.createModel(shape=MODEL_SHAPE)
 network.summary()
 

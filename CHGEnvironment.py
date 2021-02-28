@@ -133,7 +133,7 @@ class CHGEnvironment:
     self._columns = params.get('columns', 11)
     self._hungerRate = params.get('hunger rate', 40)
     self._minFood = params.get('min food', 2)
-    self._minPlayers = params.get('min players', 1)
+    self._minPlayers = params.get('min players', 2)
     self._seed = params.get('seed', None)
     self._episodeSteps = params.get('episode steps', 200)
     

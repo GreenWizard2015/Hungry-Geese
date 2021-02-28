@@ -14,7 +14,7 @@ INDEX_TO_COORD = np.array([
   row_col(x, BASIC_GRID_SHAPE[1]) for x in range(BASIC_GRID_SHAPE[0] * BASIC_GRID_SHAPE[1])
 ])
 
-def _createWrappedCoords(ZERO_POINT_SHIFT):
+def _createWrappedCoords():
   ZERO_POINT_SHIFT = np.array([(3 * MAX_DIM - p) // 2 for p in BASIC_GRID_SHAPE])
   res = np.zeros((3 * MAX_DIM, 3 * MAX_DIM, 2))
   for i, p in enumerate(ZERO_POINT_SHIFT):
@@ -62,7 +62,7 @@ def _encodeCentered(res, rot, headIndex):
   return res[COORDS[0], COORDS[1]].view().reshape((MAX_DIM, MAX_DIM, LAYERS_N))
 
 def _encode(food, player, enemies, rot):
-  res = np.zeros((BASIC_GRID_SHAPE.shape[0] * BASIC_GRID_SHAPE.shape[1], LAYERS_N))
+  res = np.zeros((BASIC_GRID_SHAPE[0] * BASIC_GRID_SHAPE[1], LAYERS_N))
   
   res[food, LAYER_FOOD] = 255
   for goose in enemies:
@@ -123,7 +123,7 @@ class CAgentState:
     ]
     
     results = [state, actionsMask, actionsMapping]
-    if details:
+    if True:#details:
       results.append(self._details(
         observation, configuration,
         FOOD_COORDS, PLAYER_COORDS, ENEMIES_COORDS,
@@ -131,24 +131,22 @@ class CAgentState:
       ))
     return results
 
+  def _foodVectors(self, state, playerPos):
+    foodVectors = np.zeros((4, 2), np.float16)
+    foods = list(zip(*np.nonzero(state[LAYER_FOOD])))
+    for i, food in enumerate(foods[:foodVectors.shape[0]]):
+      food = np.subtract(food, playerPos)
+      foodVectors[i] = food / np.linalg.norm(food)
+    return foodVectors
+  
   def _details(self,
     observation, configuration,
     FOOD_COORDS, PLAYER_COORDS, ENEMIES_COORDS,
     playerPos, state, actionsMask, actionsMapping
   ):
-#     foodVectors = np.zeros((4, 2), np.float16)
-#     foods = list(zip(*np.nonzero(state[LAYER_FOOD])))
-#     for i, food in enumerate(foods[:foodVectors.shape[0]]):
-#       food = np.subtract(food, playerPos)
-#       foodVectors[i] = food / np.linalg.norm(food)
-#     ########
-#     X, Y = (playerPos[0] + 1, playerPos[1])
-#     d = 2
-#     prevObstacles = (0 < state[LO_ENEMIES+LAYER_BODY, X-d:X+d+1, Y-d:Y+d+1]).astype(np.uint8)
     return {
       'starve': 1 if 1 == len(PLAYER_COORDS) else 0,
-#       'food vectors': foodVectors,
-#       'prev obstacles': prevObstacles
+      # 'food vectors': self._foodVectors(state, playerPos),
     }
     
   def perform(self, action):

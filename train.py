@@ -248,6 +248,12 @@ ENVIRONMENT_SETTINGS ={
   'death reward': -10,
   'opponent death reward': +5,
   'killed reward': -1,
+  'rank reward': {
+    1: 20,
+    2: 5,
+    3: 1,
+    4: -5 
+  }
 } 
 
 DEFAULT_LEARNING_PARAMS = {

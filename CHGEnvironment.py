@@ -1,4 +1,5 @@
 from kaggle_environments.envs.hungry_geese.hungry_geese import Action, row_col
+import numpy as np
 import random
 
 class CGoose:
@@ -118,6 +119,11 @@ class CGoose:
   def nextAction(self, action):
     self._nextAction = action
     return
+  
+  def rank(self, rank, survived=False):
+    if self._wasAlive and (survived or not self.alive):
+      self._stepReward += self._configs['rank reward'][rank]
+    return
    
 class CHGEnvironment:
   def __init__(self, params=None):
@@ -199,12 +205,16 @@ class CHGEnvironment:
     ########
     self._spawnFood()
     ######
-    if self.done:
+    done = self.done
+    if done:
       for goose in self._geese:
         if goose.alive:
           # Boost the survivor's reward to maximum
           goose.score(2 * self._episodeSteps + len(goose.body))
           goose.survived()
+    
+    for goose, rank in zip(self._geese, self._ranks()):
+      goose.rank(1 + rank, survived=done)
     return actions
   
   def _gooseCollide(self, ind):
@@ -219,6 +229,10 @@ class CHGEnvironment:
           return enemy
     return None
   
+  def _ranks(self):
+    scores = [x.score() for x in self._geese]
+    return np.argsort(np.argsort(-np.array(scores)))
+    
   def _resolveCollisions(self):
     collideWith = [self._gooseCollide(ind) for ind, _ in enumerate(self._geese)]
     for i, killer in enumerate(collideWith):

@@ -57,7 +57,6 @@ class CHGExperienceStorage:
       futureActions.append(self._encodeActions(actions[i:]))
     
     rewards = np.array(discounted, np.float16)
-    rewards[-1] + rank
     actions = actions.astype(np.int8)
     futureActions = np.array(futureActions, np.int8)
     ########

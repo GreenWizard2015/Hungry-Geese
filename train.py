@@ -24,7 +24,6 @@ from Utils.CNoisedNetwork import CNoisedNetwork
 import time
 import Utils
 import math
-import SADiscriminator
 from Agents.CAgentState import EMPTY_OBSERVATION
 from collections import defaultdict
 
@@ -77,38 +76,20 @@ def collectExperience(agents, memory, params):
   print('Win rates: ', winRates)
   return stats, winRates
 ###############
-def train(model, targetModel, expertModel, memory, params):
+def train(model, targetModel, memory, params):
   T = time.time()
-#   EAcc = expertModel.train(
-#     samplesProvider=memory.sampleExpertsActions, 
-#     batchSize=64, batchesPerEpoch=8,
-#     epochs=15,
-#     minAcc=0.9, minEpochs=3,
-#   )
-  
   lossSum = defaultdict(int)
   for _ in range(params['episodes']):
-    states, actions, rewards, nextStates, nextStateScoreMultiplier, futureActions, isStarve = memory.sampleReplays()
-    dummyV = np.zeros((states.shape[0], 3))
+    states, actions, rewards, nextStates, nextStateScoreMultiplier = memory.sampleReplays()[:5]
     rows = np.arange(states.shape[0])
-  
-#     expertScores = 0.05 * EAcc * expertModel.predict(states, futureActions)
-#     rewards += expertScores
     
-    _, GoodDQNFuture, BadDQNFuture = targetModel.predict(nextStates)
-    GFutureScores = GoodDQNFuture.max(axis=-1) * nextStateScoreMultiplier
-    BFutureScores = BadDQNFuture.max(axis=-1) * nextStateScoreMultiplier
-    ########
-    _, GTargets, BTargets = targetModel.predict(states)
+    DQNFuture, _ = targetModel.predict(nextStates)
+    futureScores = DQNFuture.max(axis=-1) * nextStateScoreMultiplier
+    targets, _ = targetModel.predict(states)
     
-    GTargets[rows, actions] += (rewards + GFutureScores) - GTargets[rows, actions]
-    BTargets[rows, actions] += (-rewards + BFutureScores) - BTargets[rows, actions]
+    targets[rows, actions] = rewards + futureScores
     
-    history = model.fit(
-      states, 
-      [dummyV, GTargets, BTargets],
-      epochs=1, verbose=0
-    ).history
+    history = model.fit(states, targets, epochs=1, verbose=0).history
     
     for k, v in history.items():
       lossSum[k] += v[0]
@@ -130,10 +111,6 @@ def learn_environment(model, params):
   }
 
   memory = CHGExperienceStorage(params['experience storage'])
-  expertModel = SADiscriminator.CDiscriminator(
-    stateShape=params['shape'],
-    actionsN=params['experience storage']['experts actions']['range']
-  )
   ######################################################
   lastBestModels = [
     (Utils.DummyNetwork, Agents.CGreedyAgent),
@@ -160,7 +137,7 @@ def learn_environment(model, params):
   # collect some experience
   for epoch in range(2):
     testModel(EXPLORE_RATE=0.8)
-    
+
   #######################
   targetModel = params['model clone'](model)
   targetModel.set_weights(model.get_weights())
@@ -175,63 +152,58 @@ def learn_environment(model, params):
       targetModel.set_weights(model.get_weights())
     
     train(
-      model, targetModel, expertModel, memory,
+      model, targetModel, memory,
       {
         'episodes': params['train episodes'](epoch),
         'model clone': params['model clone']
       }
     )
     
-    ##################
-    # test
-    print('Testing...')
-    stats, winRates = testModel(EXPLORE_RATE)
-    for k, v in stats.items():
-      Utils.trackScores(v, metrics, metricName=k)
-    
-    for k, v in winRates.items():
-      if k not in wrHistory:
-        wrHistory[k] = [0] * epoch
-      wrHistory[k].append(v)
-    ##################
-    
-    print('Scores sum: %.5f' % sum(stats['Score_network']))
-    
     os.makedirs('weights', exist_ok=True)
     model.save_weights('weights/%s-latest.h5' % NAME)
-    if params['min win rate'] <= winRates['network']:
-      print('save model (win rate: %.2f%%)' % (100.0 * winRates['network']))
-      model.save_weights('weights/%s-epoch-%06d.h5' % (NAME, epoch))
-      ########
-      LBM = params['model clone'](model)
-      LBM.set_weights(model.get_weights())
-      lastBestModels = [
-        (CNoisedNetwork(LBM, noise=0.0), lambda: Agents.CAgent(kind='LBM')),
-        lastBestModels[0]
-      ]
-    
     ##################
-    os.makedirs('charts/%s' % NAME, exist_ok=True)
-    for metricName in metrics.keys():
-      Utils.plotData2file(metrics, 'charts/%s/%s.jpg' % (NAME, metricName), metricName)
-    Utils.plotSeries2file(wrHistory, 'charts/%s/win_rates.jpg' % (NAME,), 'Win rates')
+    # test
+    if (epoch % params['test interval']) == 0:
+      print('Testing...')
+      stats, winRates = testModel(EXPLORE_RATE)
+      for k, v in stats.items():
+        Utils.trackScores(v, metrics, metricName=k)
+      
+      for k, v in winRates.items():
+        if k not in wrHistory:
+          wrHistory[k] = [0] * epoch
+        wrHistory[k].append(v)
+      ##################
+      
+      print('Scores sum: %.5f' % sum(stats['Score_network']))
+      
+      if params['min win rate'] <= winRates['network']:
+        print('save model (win rate: %.2f%%)' % (100.0 * winRates['network']))
+        model.save_weights('weights/%s-epoch-%06d.h5' % (NAME, epoch))
+        ########
+        LBM = params['model clone'](model)
+        LBM.set_weights(model.get_weights())
+        lastBestModels = [
+          (CNoisedNetwork(LBM, noise=0.0), lambda: Agents.CAgent(kind='LBM')),
+          lastBestModels[0]
+        ]
+    
+      os.makedirs('charts/%s' % NAME, exist_ok=True)
+      for metricName in metrics.keys():
+        Utils.plotData2file(metrics, 'charts/%s/%s.jpg' % (NAME, metricName), metricName)
+      Utils.plotSeries2file(wrHistory, 'charts/%s/win_rates.jpg' % (NAME,), 'Win rates')
+    ##################
     print('Epoch %d finished in %.1f sec.' % (epoch, time.time() - T))
     print('------------------')
 ############
 
 MODEL_SHAPE = EMPTY_OBSERVATION.shape
-network  = M.createModel(shape=MODEL_SHAPE)
+network = M.createModel(shape=MODEL_SHAPE)
 network.summary()
 
-def entropyOf(y_pred):
-  probs = y_pred / (tf.reduce_sum(y_pred , axis=1, keepdims=True) + 1e-8)
-  return -tf.reduce_sum(probs * tf.math.log(probs + 1e-8), axis=1)
-
 network.compile(optimizer=Adam(lr=1e-4, clipnorm=1.), loss=[
-  lambda _,x: tf.math.reduce_mean(entropyOf(x)), # ensembledQValues
-  Huber(delta=1.), # GoodDuelDQN
-  Huber(delta=1.), # BadDuelDQN
-], loss_weights=[0.05, 1, 1])
+  Huber(delta=1.), # DQN
+], loss_weights=[1])
 
 # calc GAMMA so  +-1 reward after N steps would give +-0.001 for current step
 GAMMA = math.pow(0.001, 1.0 / 50.0)
@@ -241,36 +213,31 @@ ENVIRONMENT_SETTINGS ={
   'episode steps': 200,
   'min players': 2,
   ##############
-  'survived reward': +10,
-  'kill reward': +.5,
-  'grow reward': lambda x: 0.85 ** (len(x) - 1),
+  'survived reward': +0,
+  'kill reward': +0,
+  'grow reward': lambda x: 0.1,
   'starve reward': -10,
   'death reward': -10,
-  'opponent death reward': +5,
+  'opponent death reward': +0,
   'killed reward': -1,
   'rank reward': {
-    1: 20,
+    1: 10,
     2: 5,
-    3: 1,
-    4: -5 
+    3: 3,
+    4: 1
   }
-} 
+}
 
 DEFAULT_LEARNING_PARAMS = {
   'shape': MODEL_SHAPE,
   'model clone': lambda _: M.createModel(shape=MODEL_SHAPE),
   'experience storage': {
     'gamma': GAMMA,
-    'bootstrapped steps': 2,
+    'bootstrapped steps': 1,
     'replays batch size': 64,
     'fetch replays': {
       'replays': 256,
-      'batch interval': 200,
-    },
-    
-    'experts actions': {
-      'range': 3,
-      'mask': np.inf
+      'batch interval': 2000,
     },
     
     'replays': {
@@ -282,9 +249,10 @@ DEFAULT_LEARNING_PARAMS = {
   
   'epochs': 1000,
   'train episodes': lambda _: 128,
+  'test interval': 10,
   'test episodes': 128,
 
-  'explore rate': lambda e: max((.05 * .9**e, 1e-3)),
+  'explore rate': lambda e: 0,
   
   'env': ENVIRONMENT_SETTINGS,
   'min win rate': .5,

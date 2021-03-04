@@ -23,45 +23,34 @@ class CHGExperienceStorage:
     }
     self._replaysBatchSize = params['replays batch size']
     
-    self._expertsActionsN = params['experts actions']['range']
-    self._expertsActionsMask = params['experts actions']['mask']
-    
     self._replaysStorage = CHGReplaysStorage(params['replays'])
     self._fetchReplayN = params['fetch replays']['replays']
     self._fetchReplayInterval = params['fetch replays']['batch interval']
     self._batchID = 0
     return
-  
-  def _encodeActions(self, acts):
-    masked = np.full((self._expertsActionsN, ), self._expertsActionsMask)
-    masked[:len(acts)] = acts[:self._expertsActionsN] - 1. # 0..2 => -1..1
-    return masked.astype(np.int8)
 
   def _preprocess(self, replay, rank):
     BOOTSTRAPPED_STEPS = len(self._DISCOUNTS) - 1
     
     unzipped = list(zip(*replay))
-    details = unzipped[-1]
+    # details = unzipped[-1]
     prevState, actions, rewards, nextStates, alive = (np.array(x, np.float16) for x in unzipped[:-1])
     
     # bootstrap & discounts
     discounted = []
-    futureActions = []
-    for i in range(len(rewards)):
+    L = len(rewards)
+    for i in range(L):
       r = rewards[i:i+BOOTSTRAPPED_STEPS]
       N = len(r)
 
       discounted.append( (r * self._DISCOUNTS[:N]).sum() )
       nextStates[i] = nextStates[i+N-1]
       alive[i] *= self._DISCOUNTS[N]
-      futureActions.append(self._encodeActions(actions[i:]))
-    
+
     rewards = np.array(discounted, np.float16)
     actions = actions.astype(np.int8)
-    futureActions = np.array(futureActions, np.int8)
     ########
-    isStarve = [x['starve'] for x in details]
-    return list(zip(prevState, actions, rewards, nextStates, alive, futureActions, isStarve))
+    return list(zip(prevState, actions, rewards, nextStates, alive))
   
   def store(self, replay, rank):
     self._byRank[rank].store(self._preprocess(replay, rank))
@@ -70,7 +59,9 @@ class CHGExperienceStorage:
   def sampleReplays(self, batch_size=None):
     if batch_size  is None:
       batch_size = self._replaysBatchSize
-    self._fetchStoredReplays()
+      
+    if (self._batchID % self._fetchReplayInterval) == 0:
+      self.fetchStoredReplays(self._fetchReplayN)
     # sample from each of ranks buffer
     def sampler():
       while True:
@@ -86,26 +77,19 @@ class CHGExperienceStorage:
     self._batchID += 1      
     return data
   
-  def sampleExpertsActions(self, batch_size, sampleExpert):
-    buffer = self._byRank[1] if  sampleExpert else self._byRank[4]
-    (states, _, _, _, _, futureActions, _), _ = buffer.sample(batch_size)
-    return [states, futureActions]
-  
   def storeReplay(self, replay):
     self._replaysStorage.store(replay)
     return
   
-  def _fetchStoredReplays(self):
-    if (self._batchID % self._fetchReplayInterval) == 0:
-      T = time.time()
-      N = 0
-      for _ in range(self._fetchReplayN):
-        res = self._replaysStorage.sampleReplay()
-        if res:
-          trajectories, info = res
-          for traj, rank in zip(trajectories, info['ranks']):
-            self.store(traj, rank)
-          N += 1
-      print('Fetched %d from storage in %.1fms' % (N, (time.time() - T) * 1000.0))
-      
+  def fetchStoredReplays(self, replaysN):
+    T = time.time()
+    N = 0
+    for _ in range(replaysN):
+      res = self._replaysStorage.sampleReplay()
+      if res:
+        trajectories, info = res
+        for traj, rank in zip(trajectories, info['ranks']):
+          self.store(traj, rank)
+        N += 1
+    print('Fetched %d from storage in %.1fms' % (N, (time.time() - T) * 1000.0))
     return

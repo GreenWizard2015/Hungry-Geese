@@ -144,8 +144,15 @@ class CAgentState:
     FOOD_COORDS, PLAYER_COORDS, ENEMIES_COORDS,
     playerPos, state, actionsMask, actionsMapping
   ):
+    nearbySpace = 2
+    X, Y = playerPos
+    nearbyObstacles = state[
+      X-nearbySpace:X+nearbySpace+1,
+      Y-nearbySpace:Y+nearbySpace+1,
+    ]
     return {
       'starve': 1 if 1 == len(PLAYER_COORDS) else 0,
+      'free space': np.count_nonzero(nearbyObstacles) / nearbyObstacles.size
       # 'food vectors': self._foodVectors(state, playerPos),
     }
     

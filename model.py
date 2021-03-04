@@ -10,7 +10,7 @@ keras.utils.get_custom_objects().update({
 def convBlock(prev, sz, filters):
   conv_1 = layers.Convolution2D(filters, (sz, sz), padding="same", activation='DQN_LReLu')(prev)
   conv_1 = layers.Dropout(0.1)(conv_1)
-#   conv_1 = layers.BatchNormalization()(conv_1)
+  conv_1 = layers.BatchNormalization()(conv_1)
   return conv_1
 
 def downsamplingBlock(res, sz, filters, hiddenLayers=1):
@@ -26,29 +26,36 @@ def ConvSkipBlock(data, name):
     out = convBlock(out, sz, filters)
   return layers.Add(name='%s_CSB_out' % name)([data, out])
 
-def ConvDDQNBranchBlock(data, name):
-  branchA = ConvSkipBlock(data, name='%s_A' % name)
-  branchB = ConvSkipBlock(branchA, name='%s_B' % name)
-  branchSum = layers.Add(name='%s_Sum' % name)([branchA, branchB, data]) # 11x11x10
-  branchD1 = downsamplingBlock(branchSum, 1, filters=6) # 6x6x6
-  branchD2 = downsamplingBlock(branchD1, 1, filters=3) # 3x3x3
-  branchD3 = downsamplingBlock(branchD2, 1, filters=2) # 2x2x2
-  return layers.Flatten()(branchD3)
+def DDQNBranchBlock(data, name):
+  res = data
+  for sz in range(data.shape[-1], 16, -32):
+    res = layers.Dense(sz, activation='DQN_LReLu')(res)
+    res = layers.Dropout(.1)(res)
+  
+  res = layers.Concatenate(axis=-1)([res, data])
+  mid = res
+  res = data
+  for sz in range(data.shape[-1], 16, -24):
+    res = layers.Dense(sz, activation='DQN_LReLu')(res)
+    res = layers.Dropout(.1)(res)
+  return res, mid
 
-def ConvDuelingDQNBlock(data, name, actionsN=3):
+def DuelingDQNBlock(data, name, actionsN=3):
   # value branch
+  valueBranch, VBR = DDQNBranchBlock(data, name='%s_valueBranch' % name)
   valueBranch = layers.Dense(1, activation='DQN_LReLu', name='%s_value' % name)(
-    ConvDDQNBranchBlock(data, name='%s_valueBranch' % name)
+    valueBranch
   )
   # actions branch
+  actionsBranch, ABR = DDQNBranchBlock(data, name='%s_actionsBranch' % name)
   actionsBranch = layers.Dense(actionsN, activation='linear', name='%s_actions' % name)(
-    ConvDDQNBranchBlock(data, name='%s_actionsBranch' % name)
+    actionsBranch
   )
   # combine branches  
   return layers.Lambda(
     lambda x: x[1] + (x[0] - tf.reduce_mean(x[0], axis=-1, keepdims=True)),
     name='%s_Q' % name
-  )([actionsBranch, valueBranch])
+  )([actionsBranch, valueBranch]), [ABR,  VBR]
 
 def combineQValues(QNets):
   Good, Bad = QNets
@@ -57,19 +64,30 @@ def combineQValues(QNets):
 
   return tf.nn.softmax(Good * Bad)
 
-def createModel(shape, fixDimensions=False):
+def regularizationBlock(data, N):
+  res = layers.Flatten()(data)
+  res = layers.Dense(16, activation='tanh')(res)
+  return layers.Dense(N, activation='tanh')(res)
+  
+def stackedMean(values):
+  stacked = K.stack(values, axis=-1)
+  return tf.reduce_mean(stacked, axis=-1)
+
+def createModel(shape):
   gameState = res = layers.Input(shape=shape)
-  
-  if fixDimensions:
-    res = layers.Lambda(lambda x: K.permute_dimensions(x, (0, 2, 3, 1)))(gameState)
 
-  res = convBlock(res, sz=2, filters=64)
-  GoodDQN = ConvDuelingDQNBlock(res, actionsN=3, name='GoodDQN')
-  BadDQN = ConvDuelingDQNBlock(res, actionsN=3, name='BadDQN')
-
-  ensembledQValues = layers.Lambda(combineQValues, name='EnsembledQ')([GoodDQN, BadDQN])
+  res = downsamplingBlock(res, sz=5, filters=8, hiddenLayers=8)
+  res = downsamplingBlock(res, sz=4, filters=64, hiddenLayers=8)
+  res = downsamplingBlock(res, sz=3, filters=128, hiddenLayers=8)
+  res = layers.Flatten()(res)
+  DDQN, R1 = DuelingDQNBlock(res, actionsN=3, name='DQN')
   
+  regLayers = R1
+  AUX = layers.Lambda(stackedMean, name='AUX')([
+    regularizationBlock(x, 3) for x in regLayers
+  ])
+    
   return keras.Model(
     inputs=[gameState],
-    outputs=[ensembledQValues, GoodDQN, BadDQN]
+    outputs=[DDQN, AUX]
   )

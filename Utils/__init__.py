@@ -2,6 +2,8 @@ import pylab as plt
 import Agents
 import numpy as np
 from CHGEnvironment import CHGEnvironment
+from Agents.CWorldState import CWorldState, CGlobalWorldState
+from kaggle_environments.envs.hungry_geese.hungry_geese import Observation
 
 class CDummyNetwork:
   def predict(self, X):
@@ -9,15 +11,62 @@ class CDummyNetwork:
 
 DummyNetwork = CDummyNetwork()
 
+def collectExperience(agents, memory, params):
+  trajectories, stats = replays = collectReplays(
+    models=[x[0] for x in agents],
+    agentsKinds=[x[1] for x in agents],
+    envN=params['episodes'],
+    envParams=params.get('env', {})
+  )
+  if memory: memory.store(replays)
+  
+  scores = stats['scores']
+  ranks = stats['ranks']
+  kinds = stats['kinds']
+  kindsSet = set(kinds)
+  
+  deathBy = stats['death by']
+  deathReasons = set(deathBy)
+    
+  for kind in kindsSet:
+    print(kind, {
+      reason: sum(
+        1 for i, x in enumerate(deathBy) if (x==reason) and (kind==kinds[i])
+      ) for reason in deathReasons
+    })
+  
+  RLRewards = []
+  Ages = []
+  for traj in trajectories:
+    Ages.append(len(traj))
+    RLRewards.append(sum(x[2] for x in traj))
+
+  winRates = {}
+  stats = {}
+  for kind in kinds:
+    replaysID = [i for i, k in enumerate(kinds) if k == kind]
+    stats.update({
+      'Age_%s' % kind: [Ages[i] for i in replaysID],
+      'Score_%s' % kind: [scores[i] for i in replaysID],
+      'RLRewards_%s' % kind: [RLRewards[i] for i in replaysID],
+    })
+  
+    winN = sum(1 for i in replaysID if ranks[i] == 1)
+    winRates[kind] = winN / float(len(replaysID))
+    
+  print('Win rates: ', winRates)
+  return stats, winRates
+
 def collectReplays(models, agentsKinds, envN, envParams={}):
   agentsN = len(agentsKinds)
+  worlds = [CWorldState() for _ in range(envN)]
   environments = [CHGEnvironment({**envParams, 'agents': agentsN}) for _ in range(envN)]
-  def makeAgent(index):
+  def makeAgent(index, world):
     spawnMe = agentsKinds[index]
-    return spawnMe()
+    return spawnMe(world)
   
   EA = [
-    (env, [makeAgent(i) for i in range(agentsN)]) for env in environments
+    (env, [makeAgent(i, world) for i in range(agentsN)]) for env, world in zip(environments, worlds)
   ]
   allAgents = []
   for _, agents in EA: allAgents.extend(agents)
@@ -26,30 +75,23 @@ def collectReplays(models, agentsKinds, envN, envParams={}):
   scores = [0 for _ in allAgents]
   isAlive = [True for _ in allAgents]
   for e in environments: e.reset()
-  for a in allAgents: a.reset()
   
   def encodedStates():
-    res = []
+    for env, world in zip(environments, worlds):
+      if not env.done:
+        world.update(Observation(env.state[0]['observation']))
+      
+    states = []
     observations = []
-    Details = []
     for env, agents in EA:
       for obs, agent in zip(env.state, agents):
-        state = None
-        details = None
-        if obs['alive']:
-          state, details = agent.processObservations(
-            obs['observation'], env.configuration, True, details=True
-          )
-        else:
-          state = agent.processObservations(obs['observation'], env.configuration, False)
-          
-        res.append(state)
+        state = agent.processObservations(obs['observation'], env.configuration, obs['alive'])
+        states.append(state)
         observations.append(obs)
-        Details.append(details)
-    return res, observations, Details
+    return states, observations
   
   deathReasons = ['' for _ in allAgents]
-  prevStates, _, prevDetails = encodedStates()
+  prevStates, _ = encodedStates()
   actionsNames = [None] * len(allAgents)
   actionsID = [None] * len(allAgents)
   while not all(env.done for env in environments):
@@ -66,35 +108,41 @@ def collectReplays(models, agentsKinds, envN, envParams={}):
     for i, env in enumerate(environments):
       env.step(actionsNames[(i * agentsN):((i + 1) * agentsN)])
       
-    states, observations, Details = encodedStates()
-    for i, (obs, details) in enumerate(zip(observations, prevDetails)):
+    states, observations = encodedStates()
+    for i, obs in enumerate(observations):
       if obs['was alive']:
         replays[i].append((
-          prevStates[i], actionsID[i], obs['step reward'], states[i], 1 - obs['was killed'], details
+          prevStates[i], actionsID[i], obs['step reward'], states[i], 1 - obs['was killed']
         ))
         
         scores[i] = obs['score']
         deathReasons[i] = obs['death reason']
+        isAlive[i] = obs['alive']
     ##
     prevStates = states
-    prevDetails = Details
   ##
+  kinds = [agent.kind for agent in allAgents]
   ranks = []
-  kinds = []
-  for env, agents in EA:
-    agentsScores = [x['score'] for x in env.state]
-    ranked = np.argsort(np.argsort(-np.array(agentsScores)))
-    
-    for rank, agent in zip(ranked, agents):
-      ranks.append(1 + rank)
-      kinds.append(agent.kind)
+  rankRewards = envParams['rank reward']
+  for i, env in enumerate(environments):
+    rnk = env.ranks()
+    ranks.extend(rnk)
+    for j, rank in enumerate(rnk): # RL bonus
+      S, A, R, NS, D = replays[(i * agentsN) + j][-1]
+      replays[(i * agentsN) + j][-1] = (S, A, R + rankRewards[rank], NS, D)
 
   return replays, {
     'scores': scores,
     'ranks': ranks,
     'kinds': kinds,
     'death by': deathReasons,
-    'raw replays': [e.replay() for e in environments]
+    'raw replays': [e.replay() for e in environments],
+    'games': [
+      list(zip(
+        replays[(i * agentsN):((i + 1) * agentsN)],
+        ranks[(i * agentsN):((i + 1) * agentsN)],
+      )) for i, env in enumerate(environments)
+    ],
   }
   
 def expandReplays(replay, envParams={}):
@@ -151,3 +199,9 @@ def profileAndHalt(f):
   p.disable()
   p.print_stats(sort=2)
   exit()
+  
+def restoreStates(states):
+  restored = []
+  for s in states:
+    restored.append(CGlobalWorldState(s).player(0).view())
+  return np.array(restored)

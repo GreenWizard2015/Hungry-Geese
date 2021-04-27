@@ -6,11 +6,13 @@ from io import BytesIO
 SUBMISSION_FILE = 'submission-%s.tar.gz' % (datetime.now().strftime('%Y-%m-%d'))
 
 INCLUDES = [
-  'model.py',
-  'weights/agent-0.h5',
+  'ConvDQNModel.py',
+  'CREDQEnsemble.py',
+  'weights/agent.h5',
   'Agents/CAgent.py',
   'Agents/CAgentState.py',
-  'Agents/discountedWaves.py'
+  'Agents/CWorldState.py',
+  'Utils/TFUtils.py'
 ]
 
 AGENT_CODE = """
@@ -20,18 +22,16 @@ import sys
 FOLDER = '/kaggle_simulations/agent/'
 sys.path.append(FOLDER)
 #################
-import model
+from CREDQEnsemble import CREDQEnsemble
+import ConvDQNModel
 from Agents.CAgent import CAgent
-from Agents.CAgentState import LO_SHAPE
+from Agents.CAgentState import EMPTY_OBSERVATION
 
-network = model.createModel(shape=LO_SHAPE)
-network.load_weights(os.path.join(FOLDER, 'weights/agent-0.h5'))
+network = CREDQEnsemble(submodel=ConvDQNModel.createModel, NModels=3)
+network.load(os.path.join(FOLDER, 'weights/agent.h5'))
 
-MY_AGENT = CAgent(model=network)
-MY_AGENT.reset()
-
+MY_AGENT = CAgent(None, model=network)
 def agent(obs_dict, config_dict):
-  global MY_AGENT
   return MY_AGENT(obs_dict, config_dict)
 """
 

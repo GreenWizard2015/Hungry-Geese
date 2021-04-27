@@ -9,11 +9,11 @@ class CGoose:
     self.body = [head]
     self._prevAction = None
     self._nextAction = None
-    self._score = 0
     self._configs = configs
     self._deathReason = ''
     self._age = 0
     self.nextStep()
+    self.score(0)
     return
   
   def nextStep(self):
@@ -22,29 +22,30 @@ class CGoose:
       
     self._stepReward = 0
     self._wasAlive = self.alive
+    self._lastLength = len(self.body)
     self._wasKilled = False
     return
 
-  def die(self, reason, killed=False):
+  def die(self, reason):
     if self.alive:
       self._deathReason = reason
-      if killed:
-        self._stepReward += self._configs.get('death reward', -1)
-      self._wasKilled = killed
+      self._stepReward += self._configs.get('death reward', -1)
+      self._wasKilled = True
 
     self.alive = False
     self.body = []
     return
     
-  def checkMove(self, action, newPos):
+  def checkMove(self, action, newPos, isKilled):
     if not (self._prevAction is None): # not first move
       if action == self._prevAction.opposite():
-        self.die('Illegal move.', killed=True)
+        self.die('Illegal move.')
         print('Illegal move.')
         return False
     
     if newPos in self.body[:-1]: # self collision
-      self.die('Self collision.', killed=True)
+      if not isKilled(self):
+        self.die('Self collision.')
       return False
     
     self._prevAction = action
@@ -113,18 +114,14 @@ class CGoose:
     }
   
   def score(self, v=None):
-    self._score = self._score if v is None else v
+    if not (v is None):
+      self._score = v + random.random() * 0.1 # prevents same rank
     return self._score
   
   def nextAction(self, action):
     self._nextAction = action
     return
-  
-  def rank(self, rank, survived=False):
-    if self._wasAlive and (survived or not self.alive):
-      self._stepReward += self._configs['rank reward'][rank]
-    return
-   
+
 class CHGEnvironment:
   def __init__(self, params=None):
     replay = params.get('replay', None)
@@ -162,8 +159,9 @@ class CHGEnvironment:
     self._food = set()
     self._geese = []
     
+    for i in range(self._agents):
+      self._geese.append(CGoose(i, self._sampleCell(), self._params))
     self._spawnFood()
-    self._geese = [CGoose(i, self._sampleCell(), self._params) for i in range(self._agents)]
     return self.state
   
   def _save(self, data):
@@ -212,42 +210,36 @@ class CHGEnvironment:
           # Boost the survivor's reward to maximum
           goose.score(2 * self._episodeSteps + len(goose.body))
           goose.survived()
-    
-    for goose, rank in zip(self._geese, self._ranks()):
-      goose.rank(1 + rank, survived=done)
     return actions
   
+  def _headCollide(self, head, goose):
+    for enemy in self._geese:
+      if enemy.alive and not (goose == enemy):
+        if head in enemy.body:
+          return enemy
+    return None
+
   def _gooseCollide(self, ind):
     goose = self._geese[ind]
     if not goose.alive:
       return None
     
-    head = goose.body[0]
-    for i, enemy in enumerate(self._geese):
-      if enemy.alive and not(i == ind):
-        if head in enemy.body:
-          return enemy
-    return None
+    return self._headCollide(goose.body[0], goose)
   
-  def _ranks(self):
+  def ranks(self):
     scores = [x.score() for x in self._geese]
-    return np.argsort(np.argsort(-np.array(scores)))
+    return 1 + np.argsort(np.argsort(-np.array(scores)))
     
   def _resolveCollisions(self):
     collideWith = [self._gooseCollide(ind) for ind, _ in enumerate(self._geese)]
     for i, killer in enumerate(collideWith):
       if not (killer is None):
-        self._geese[i].die('Collide with goose', killed=True)
-        
-    for killer in collideWith:
-      if not (killer is None):
-        if killer.alive:
-          killer.killOpponent()
+        self._geese[i].die('Collide with goose')
 
     for i, killer in enumerate(collideWith):
-      if not (killer is None):
-        if killer.alive:
-          self._geese[i].killed()
+      if not (killer is None) and killer.alive:
+        self._geese[i].killed()
+        killer.killOpponent()
     
     if any(not(x is None) for x in collideWith):
       for goose in self._geese:
@@ -287,11 +279,27 @@ class CHGEnvironment:
     for x in self._food:
       freeCells.remove(x)
 
+    heads = list(self._food)
     for goose in self._geese:
+      if goose.alive: heads.append(goose.body[0])
       for x in goose.body:
         if x in freeCells: freeCells.remove(x)
 
+    ###### 
+    heads = [row_col(x, self._columns) for x in heads]
+    def minDistance(index):
+      if len(heads) <= 0: return 1
+      pt = np.array(row_col(index, self._columns), np.float)
+      return min([np.linalg.norm(x - pt) for x in heads]) 
+    
     res = self._random.choice(freeCells)
+    bestD = minDistance(res)
+    for _ in range(5):
+      pt = self._random.choice(freeCells)
+      D = minDistance(pt)
+      if bestD < D:
+        res, bestD = pt, D
+    ######
     self._save(('cell', res))
     return res
 
@@ -303,13 +311,27 @@ class CHGEnvironment:
     column = (column + column_offset) % columns
     return row * columns + column
   
+  def _isKilled(self, goose):
+    res = False
+    for action in Action:
+      pos = self._translate(goose.body[0], action)
+      collided = self._headCollide(pos, goose)
+      if not (collided is None):
+        collided.killOpponent()
+        res = True
+    ######
+    if res:
+      goose.die('???')
+      goose.killed()
+    return res
+  
   def _perform(self, goose, action):
     if not goose.alive: return
     goose.score(self._step + len(goose.body))  # standard score
     
     action = Action[action]
     newHead = self._translate(goose.body[0], action)
-    if not goose.checkMove(action, newHead): return
+    if not goose.checkMove(action, newHead, self._isKilled): return
     
     goose.moveTo(newHead, grow=self._eatFood(newHead))
     return

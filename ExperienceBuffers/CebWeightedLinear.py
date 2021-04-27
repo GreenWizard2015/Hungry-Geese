@@ -7,7 +7,6 @@ class CWeightsUpdater:
     return
   
   def update(self, values):
-    return
     return self._updater(values)
   
 class CebWeightedLinear:

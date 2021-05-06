@@ -41,6 +41,7 @@ def train(model, memory, params):
     lossSum['loss'] += loss
     Err.update(errors)
     ###
+    model.updateTargetModel(0.01)
 
   print('Training finished in %.1f sec.' % (time.time() - T))
   trainLoss = {k: v / params['episodes'] for k, v in lossSum.items()}
@@ -103,8 +104,8 @@ def learn_environment(model, params):
     print('[%s] %d/%d epoch. Explore rate: %.3f.' % (NAME, epoch, params['epochs'], EXPLORE_RATE))
     ##################
     # Training
-    if params.get('target update', lambda _: True)(epoch):
-      model.updateTargetModel()
+#     if params.get('target update', lambda _: True)(epoch):
+#       model.updateTargetModel()
     
     train(model, memory, { 'episodes': params['train episodes'](epoch) })
 

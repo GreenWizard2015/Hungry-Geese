@@ -3,24 +3,33 @@ from ExperienceBuffers.CMulticastUpdater import collectSamples, sampleFromBuffer
 from ExperienceBuffers.CebWeightedLinear import CebWeightedLinear
 from ExperienceBuffers.CHGReplaysStorage import CHGReplaysStorage
 import time
+from Agents.CWorldState import CWorldState, CGlobalWorldState
 
 class CHGExperienceStorage:
   def __init__(self, params):
     self._batchSize = params.get('batch size', None)
     
-    GAMMA = params.get('gamma', 1.0)
+    self._GAMMA = params.get('gamma', 1.0)
     BOOTSTRAPPED_STEPS = params.get('bootstrapped steps', 0)
-    self._LOOKAHEAD_STEPS = params.get('lookahead', 1)
-    self._DISCOUNTS = GAMMA ** np.arange(BOOTSTRAPPED_STEPS + 1)
+    self._DISCOUNTS = self._GAMMA ** np.arange(BOOTSTRAPPED_STEPS + 1)
     
-    MEM_SIZE = 200 * 2000
-    self._byRank = {
+    self._LLParams = params['low level policy']
+    MEM_SIZE = self._LLParams.get('memory size per rank', 20 * 2000)
+    self._LLSamples = {
       1: CebWeightedLinear(maxSize=MEM_SIZE),
       2: CebWeightedLinear(maxSize=MEM_SIZE),
       3: CebWeightedLinear(maxSize=MEM_SIZE),
       4: CebWeightedLinear(maxSize=MEM_SIZE),
     }
-    self._replaysBatchSize = params['batch size']
+    
+    self._HLParams = params['high level policy']
+    MEM_SIZE = self._HLParams.get('memory size per rank', 20 * 2000)
+    self._HLSamples = {
+      1: CebWeightedLinear(maxSize=MEM_SIZE),
+      2: CebWeightedLinear(maxSize=MEM_SIZE),
+      3: CebWeightedLinear(maxSize=MEM_SIZE),
+      4: CebWeightedLinear(maxSize=MEM_SIZE),
+    }
     
     self._replaysStorage = CHGReplaysStorage(params['replays'])
     self._fetchReplayN = params['fetch replays']['replays']
@@ -28,7 +37,7 @@ class CHGExperienceStorage:
     self._batchID = 0
     return
 
-  def _preprocess(self, replay):
+  def _createLL(self, replay):
     BOOTSTRAPPED_STEPS = len(self._DISCOUNTS) - 1
     
     unzipped = list(zip(*replay))
@@ -36,7 +45,6 @@ class CHGExperienceStorage:
     
     # bootstrap & discounts
     discounted = []
-    lookahead = []
     L = len(rewards)
     for i in range(L):
       r = rewards[i:i+BOOTSTRAPPED_STEPS]
@@ -46,23 +54,52 @@ class CHGExperienceStorage:
       nextStates[i] = nextStates[i+N-1]
       alive[i] *= self._DISCOUNTS[N]
       #######
-      a = actions[i:i+self._LOOKAHEAD_STEPS]
-      N = len(a)
-      la = np.full((self._LOOKAHEAD_STEPS,), -1)
-      la[:N] = a
-      lookahead.append(la)
-      #######
 
     rewards = np.array(discounted, np.float16)
     actions = actions.astype(np.int8)
-    lookahead = np.array(lookahead, np.int8)
     ########
-    return [prevState, actions, rewards, nextStates, alive, lookahead]
+    return [prevState, actions, rewards, nextStates, alive]
+
+  def _createHL(self, replay):
+    unzipped = list(zip(*replay))
+    prevState, actions, rewards, nextStates, alive = (np.array(x, np.float16) for x in unzipped)
+    
+    R = self._HLParams['R']
+    STEPS = self._HLParams['steps']
+    SAMPLES = self._HLParams.get('samples', int('inf'))
+    
+    # bootstrap & discounts
+    startStatesIndex = list(set(np.random.choice(
+      np.arange(len(prevState)),
+      min(len(prevState), SAMPLES)
+    )))
+    rS, rA, rR, rNS, rM = [], [], [], [], []
+    for ind in startStatesIndex:
+      r = rewards[ind:ind+STEPS]
+      N = len(r)
+
+      start = CGlobalWorldState(prevState[ind]).player(0)
+      finish = CGlobalWorldState(prevState[ind + N]).player(0) 
+      
+      rS.append(states[ind])
+      rA.append( ??? )
+      rR.append( (r[::-1] * (self._GAMMA ** np.arange(N))).sum() )
+      rNS.append(nextStates[ind+N-1])
+      rM.append(alive[ind + N - 1] * self._GAMMA)
+      #######
+
+    rS, rA, rR, rNS, rM = [np.array(x, np.float16) for x in [rS, rA, rR, rNS, rM])
+    rA = rA.astype(np.int8)
+    ########
+    return [rS, rA, rR, rNS, rM]
   
   def _storeGame(self, game):
-    playerData = [self._preprocess(replay) for replay, _ in game]
-    for data, (_, rank) in zip(playerData, game):
-      self._byRank[rank].store(list(zip(*data)))
+    for replay, rank in game:
+      LLData = self._createLL(replay)
+      self._LLSamples[rank].store(list(zip(*LLData)))
+      
+      HLData = self._createHL(replay)
+      self._LLSamples[rank].store(list(zip(*HLData)))
     return
   
   def store(self, replays, save=True):
@@ -75,13 +112,11 @@ class CHGExperienceStorage:
       self.storeReplay(replay)
     return
   
-  def _sample(self, buffers, batch_size=None):
+  def _sample(self, buffers, batch_size):
     if (self._batchID % self._fetchReplayInterval) == 0:
       self.fetchStoredReplays(self._fetchReplayN)
     self._batchID += 1
-    
-    if batch_size  is None:
-      batch_size = self._replaysBatchSize
+
     # sample from each of buffer
     def sampler():
       while True:
@@ -95,25 +130,16 @@ class CHGExperienceStorage:
       samplesPerCall=1 + int(batch_size / (len(buffers) * 4))
     )
   
-  def sampleReplays(self, batch_size=None):      
-    return self._sample(self._byRank.values(), batch_size)
+  def sampleLowLevel(self, batch_size):      
+    return self._sample(self._LLSamples.values(), batch_size)
+  
+  def sampleHighLevel(self, batch_size):
+    return self._sample(self._HLSamples.values(), batch_size)
   
   def storeReplay(self, replay):
     self._replaysStorage.store(replay)
     return
-  
-  def sampleIL(self, batch_size=None, rank=1):
-    (prevState, _, _, _, _, lookahead, _), _ = self._sample([self._byRank[rank]], batch_size)
-    return prevState, lookahead
 
-  def sampleStates(self, batch_size=None):
-    res = self.sampleReplays(batch_size)
-    return res[0][0]
-
-  def sampleActionsLookahead(self, batch_size=None):
-    (prevState, _, _, _, _, lookahead, _), _ = self.sampleReplays(batch_size)
-    return prevState, lookahead
-  
   def fetchStoredReplays(self, replaysN):
     T = time.time()
     N = 0

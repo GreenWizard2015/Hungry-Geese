@@ -96,11 +96,13 @@ def gaussianBuilder(size, fwhm):
     return centralGaussian[dy:dy+size, dx:dx+size]
   return f
 
-FOOD_GAUSSIAN = gaussianBuilder(MAX_DIM, 5)
+FOOD_GAUSSIAN = gaussianBuilder(MAX_DIM, 2)
 ###############
 LAYER_FOOD = 0
- 
-PLAYER_OBSERVATION_LAYERS = 3# food, players, ???
+LAYER_PLAYERS = 1
+LAYER_GOALS = 2
+
+PLAYER_OBSERVATION_LAYERS = 3# food, players, goals
 EMPTY_PLAYER_OBSERVATION = np.zeros((MAX_DIM, MAX_DIM, PLAYER_OBSERVATION_LAYERS), np.int)
 ###############
 class CPlayerWorldState:
@@ -123,6 +125,11 @@ class CPlayerWorldState:
     return actionsMask, ACTIONS_MAPPING_BY_DIRECTION[rot]
   
   @property
+  def position(self):
+    _, pos, _ = self._head(self._playerID)
+    return INDEX_TO_COORD[pos]
+
+  @property
   def raw(self):
     state = self._state.copy()
     if 0 < self._playerID:
@@ -138,7 +145,7 @@ class CPlayerWorldState:
     _, pos, _ = self._head(i)
     return 0 <= pos
 
-  def view(self, playerID=None):
+  def view(self, playerID=None, goals=[]):
     playerID = self._playerID if playerID is None else playerID
     if not self.alive(playerID): return EMPTY_PLAYER_OBSERVATION
     
@@ -148,12 +155,14 @@ class CPlayerWorldState:
     
     res = np.zeros(EMPTY_PLAYER_OBSERVATION.shape, np.float)
     res[:, :, LAYER_FOOD] = self._encodeFoodCentroids(gridworld[:, :, LAYER_FOOD])
-    res[:, :, 1] = gridworld[:, :, 1:].sum(axis=-1)
+    res[:, :, LAYER_PLAYERS] = gridworld[:, :, 1:].sum(axis=-1)
+    for gx, gy in self._goals(goals):
+      res[gx, gy, LAYER_GOALS] = 1
     # cutoff head
     res[MAX_DIM//2, MAX_DIM//2, 1:] = 0
     return res
   
-  def RGB(self):
+  def RGB(self, goals=[]):
     res = np.zeros((MAX_DIM, MAX_DIM, 3), np.float)
     if not self.alive(self._playerID): return res
     
@@ -161,12 +170,28 @@ class CPlayerWorldState:
     _, _, head = self._head(self._playerID)
     if 0 < self._playerID:
       flatworld[:, [1, 1 + self._playerID]] = flatworld[:, [1 + self._playerID, 1]]
-      
+    
     gridworld = flatworld[WRAP_COORDS[head]].view().reshape((MAX_DIM, MAX_DIM, -1))
 
     res[:, :, 0] = gridworld[:, :, LAYER_FOOD]
     res[:, :, 1] = gridworld[:, :, 1]
     res[:, :, 2] = gridworld[:, :, 2:].sum(axis=-1)
+    
+    for gx, gy in self._goals(goals):
+      res[gx, gy, :] = 1
+    return res
+  
+  def _goals(self, goals):
+    if not goals: return []
+    res = []
+    
+    _, _, head = self._head(self._playerID)
+    coords = WRAP_COORDS[head].view().reshape((MAX_DIM, MAX_DIM))
+    for goal in goals:
+      index = (goal[0] * BASIC_GRID_COLUMNS) + goal[1]
+      goalX, goalY = np.where(coords == index)
+      for gx, gy in zip(goalX, goalY):
+        res.append((gx, gy))
     return res
   
   def _encodeFoodCentroids(self, res):
@@ -175,6 +200,14 @@ class CPlayerWorldState:
       gaussian = FOOD_GAUSSIAN(foodPos)
       res = np.maximum(res, gaussian)
     return res
+  
+  def offset2point(self, offset):
+    offset = np.add(offset, (MAX_DIM // 2, MAX_DIM // 2))
+    offsetIndex = (offset[0] * MAX_DIM) + offset[1]
+    
+    _, _, headSrc = self._head(self._playerID)
+    res = WRAP_COORDS[headSrc][offsetIndex]
+    return INDEX_TO_COORD[res]
   
   def remapOffset(self, offset, playerID):
     offset = np.add(offset, (MAX_DIM // 2, MAX_DIM // 2))

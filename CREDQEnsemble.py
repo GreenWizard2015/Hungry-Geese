@@ -37,6 +37,7 @@ def createTrainStep(model, targetModel, minibatchSize=64):
     nextAction = tf.argmax(model([nextStates, allW], training=False)[0], axis=-1)
     futureScores = tf.gather(nextQScore, nextAction, batch_dims=1)
     nextRewards = rewards + futureScores * nextStateScoreMultiplier
+    tf.assert_rank(nextRewards, 1) # [None, ]
     
     with tf.GradientTape(persistent=True) as tape:
       predictions = model([states, allW])
@@ -44,6 +45,7 @@ def createTrainStep(model, targetModel, minibatchSize=64):
       targets = predictions[0]
       targets = (nextRewards[:, None] * actions) + (targets * (1.0 - actions))
       ########
+      tf.assert_equal(tf.shape(targets), tf.shape(predictions[-1]))
       losses = [
         tf.reduce_mean(tf.keras.losses.huber(targets, x)) for x in predictions[1:]
       ]
@@ -55,26 +57,31 @@ def createTrainStep(model, targetModel, minibatchSize=64):
     return tf.reduce_mean(losses), nextRewards
 
   @tf.function
-  def step(states, actions, rewards, nextStates, nextStateScoreMultiplier, W):
+  def step(states, actions, rewards, nextStates, nextStateScoreMultiplier, W, tau):
     rewards = tf.cast(rewards, tf.float32)
-    nextStateScoreMultiplier = tf.cast(nextStateScoreMultiplier, tf.float32)
-    nextQScore = targetModel([nextStates, W], training=False)[0]
-    actions = tf.one_hot(actions, tf.shape(nextQScore)[-1])
-    
     loss = 0.0
     nextRewards = tf.zeros((tf.shape(W)[0],))
     indices = tf.reshape(tf.range(minibatchSize), (-1, 1))
+    nextStateScoreMultiplier = tf.cast(nextStateScoreMultiplier, tf.float32)
+    actions = tf.one_hot(actions, tf.shape(W)[-1])
+
     for i in tf.range(0, tf.shape(states)[0], minibatchSize):
+      nextQScore = targetModel([nextStates[i:i+minibatchSize], W[i:i+minibatchSize]], training=False)[0]
+      
       bLoss, NR = _trainBatch(
         states[i:i+minibatchSize],
         actions[i:i+minibatchSize],
         rewards[i:i+minibatchSize],
         nextStates[i:i+minibatchSize],
         nextStateScoreMultiplier[i:i+minibatchSize],
-        nextQScore[i:i+minibatchSize]
+        nextQScore
       )
       nextRewards = tf.tensor_scatter_nd_update(nextRewards, i + indices, NR)
       loss += bLoss
+
+      # soft update
+      for (a, b) in zip(targetModel.trainable_variables, model.trainable_variables):
+        a.assign(b * tau + a * (1 - tau))
 
     newValues = model([nextStates, tf.ones_like(W)], training=False)[0]
     errors = tf.abs(nextRewards - tf.reduce_sum(actions * newValues, axis=-1))
@@ -120,17 +127,27 @@ class CREDQEnsembleTrainable(CREDQEnsemble):
     self._trainStep = createTrainStep(self._model, self._targetModel, minibatchSize=64) 
     return
   
-  def fit(self, states, actions, rewards, nextStates, nextStateScoreMultiplier):
+  def fit(self, states, actions, rewards, nextStates, nextStateScoreMultiplier, tau=0.005):
     # select M random models per sample (because we can)
     W = np.zeros((len(states), self._N))
     for i in range(len(states)):
       ind = np.random.choice(self._N, self._M, replace=False)
       W[i, ind] = 1.0
       
-    return self._trainStep(states, actions, rewards, nextStates, nextStateScoreMultiplier, W)
+    return self._trainStep(states, actions, rewards, nextStates, nextStateScoreMultiplier, W, tau)
+
+  @tf.function
+  def _emaUpdate(self, targetV, srcV, tau):
+    for (a, b) in zip(targetV, srcV):
+      a.assign(b * tau + a * (1 - tau))
+    return
   
-  def updateTargetModel(self):
-    self._targetModel.set_weights(self._model.get_weights())
+  def updateTargetModel(self, tau=1.0):
+    return
+    if 1.0 <= tau:
+      self._targetModel.set_weights(self._model.get_weights())
+    else:
+      self._emaUpdate(self._targetModel.trainable_variables, self._model.trainable_variables, tau)
     return
 
   def _cloneModel(self):

@@ -4,6 +4,7 @@ from ExperienceBuffers.CebWeightedLinear import CebWeightedLinear
 from ExperienceBuffers.CHGReplaysStorage import CHGReplaysStorage
 import time
 from Agents.CWorldState import CWorldState, CGlobalWorldState
+from Utils.ActionsEncoding import actions2coords
 
 class CHGExperienceStorage:
   def __init__(self, params):
@@ -64,9 +65,8 @@ class CHGExperienceStorage:
     unzipped = list(zip(*replay))
     prevState, actions, rewards, nextStates, alive = (np.array(x, np.float16) for x in unzipped)
     
-    R = self._HLParams['R']
     STEPS = self._HLParams['steps']
-    SAMPLES = self._HLParams.get('samples', int('inf'))
+    SAMPLES = self._HLParams.get('samples', len(prevState))
     
     # bootstrap & discounts
     startStatesIndex = list(set(np.random.choice(
@@ -78,19 +78,21 @@ class CHGExperienceStorage:
       r = rewards[ind:ind+STEPS]
       N = len(r)
 
-      start = CGlobalWorldState(prevState[ind]).player(0)
-      finish = CGlobalWorldState(prevState[ind + N]).player(0) 
+      relShift = actions2coords(actions[ind:ind+N].astype(np.int))
+      dist = np.linalg.norm(relShift)
       
-      rS.append(states[ind])
-      rA.append( ??? )
-      rR.append( (r[::-1] * (self._GAMMA ** np.arange(N))).sum() )
+      rS.append(prevState[ind])
+      rA.append( relShift )
+      rR.append( (r[::-1] * (self._GAMMA ** np.arange(N))).sum() + dist )
       rNS.append(nextStates[ind+N-1])
       rM.append(alive[ind + N - 1] * self._GAMMA)
       #######
 
-    rS, rA, rR, rNS, rM = [np.array(x, np.float16) for x in [rS, rA, rR, rNS, rM])
+    rS, rA, rR, rNS, rM = [np.array(x, np.float16) for x in [rS, rA, rR, rNS, rM]]
     rA = rA.astype(np.int8)
     ########
+    print(rA)
+    exit()
     return [rS, rA, rR, rNS, rM]
   
   def _storeGame(self, game):

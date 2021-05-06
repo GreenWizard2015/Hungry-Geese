@@ -190,12 +190,20 @@ DEFAULT_LEARNING_PARAMS = {
       'replays per chunk': 1000,
       'env': ENVIRONMENT_SETTINGS,
     },
+    
+    'low level policy': {
+    },
+    
+    'high level policy': {
+      'steps': 5,
+      'samples': 25,
+    },
   },
 
   'epochs': 10000,
   'train episodes': lambda _: 16,
   'test interval': 1,
-  'test episodes': 128,
+  'test episodes': 1,
 
   'explore rate': lambda e: 0.0,
   
